@@ -1,0 +1,6 @@
+.DS_Store
+/symskills
+bin/
+dist/
+coverage.out
+*.test

@@ -1,0 +1,80 @@
+package install
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/danieljustus/symaira-skills/internal/render"
+)
+
+func TestInstallRefusesUnmanagedCollision(t *testing.T) {
+	home := t.TempDir()
+	rendered := t.TempDir()
+	writeFile(t, filepath.Join(rendered, "SKILL.md"), "---\nname: collide\ndescription: test\n---\n")
+	dest := filepath.Join(home, ".config", "opencode", "skills", "collide")
+	writeFile(t, filepath.Join(dest, "SKILL.md"), "unmanaged")
+
+	_, err := Install(RenderedSkill{
+		Target: render.TargetOpenCode,
+		Name:   "collide",
+		Path:   rendered,
+	}, Options{HomeDir: home, Scope: ScopeUser, Mode: ModeCopy})
+	if err == nil {
+		t.Fatal("expected unmanaged collision error")
+	}
+}
+
+func TestInstallCopyWritesMarkerAndUninstallRemovesManagedSkill(t *testing.T) {
+	home := t.TempDir()
+	rendered := t.TempDir()
+	writeFile(t, filepath.Join(rendered, "SKILL.md"), "---\nname: managed\ndescription: test\n---\n")
+
+	result, err := Install(RenderedSkill{
+		Target: render.TargetClaude,
+		Name:   "managed",
+		Path:   rendered,
+	}, Options{HomeDir: home, Scope: ScopeUser, Mode: ModeCopy})
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	if result.Action != "installed" {
+		t.Fatalf("action: want installed, got %q", result.Action)
+	}
+	if _, err := os.Stat(filepath.Join(result.Path, ".symskills.json")); err != nil {
+		t.Fatalf("marker missing: %v", err)
+	}
+
+	if err := Uninstall(render.TargetClaude, "managed", Options{HomeDir: home, Scope: ScopeUser}); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if _, err := os.Stat(result.Path); !os.IsNotExist(err) {
+		t.Fatalf("expected installed skill removed, stat err=%v", err)
+	}
+}
+
+func TestDiffReportsChangedFiles(t *testing.T) {
+	rendered := t.TempDir()
+	installed := t.TempDir()
+	writeFile(t, filepath.Join(rendered, "SKILL.md"), "new")
+	writeFile(t, filepath.Join(installed, "SKILL.md"), "old")
+
+	changes, err := Diff(rendered, installed)
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	if len(changes) != 1 || changes[0].Path != "SKILL.md" || changes[0].Status != "modified" {
+		t.Fatalf("unexpected changes: %#v", changes)
+	}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
