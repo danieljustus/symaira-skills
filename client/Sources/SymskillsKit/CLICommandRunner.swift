@@ -1,20 +1,34 @@
 import Foundation
 import Observation
+import SymairaCLIRunner
+import SymairaToolKit
 
 @Observable
 @MainActor
 public final class CLICommandRunner {
     public private(set) var logs: [String] = []
     public private(set) var isRunning: Bool = false
-    
+
     private let maxLogs = 1000
-    
+
+    private let runner = CLIRunner(defaultTimeout: 120)
+    private let locator: BinaryLocator = {
+        // Repo root (../symskills) as last resort keeps the pre-AppKit dev
+        // workflow working when running from Xcode without a bundled binary.
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // SymskillsKit/
+            .deletingLastPathComponent() // Sources/
+            .deletingLastPathComponent() // client/
+            .deletingLastPathComponent() // repo root
+        return BinaryLocator(extraDirectories: ["/opt/homebrew/bin", "/usr/local/bin", projectRoot.path])
+    }()
+
     public init() {}
-    
+
     public func clearLogs() {
         logs.removeAll()
     }
-    
+
     public func appendLog(_ message: String) {
         let timestamp = ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withTime, .withColonSeparatorInTime])
         logs.append("[\(timestamp)] \(message)")
@@ -22,98 +36,50 @@ public final class CLICommandRunner {
             logs.removeFirst(logs.count - maxLogs)
         }
     }
-    
-    /// Locates the bundled `symskills` binary.
+
     private func locateBinary() -> URL? {
-        if let bundleURL = Bundle.main.url(forResource: "symskills", withExtension: nil) {
-            return bundleURL
-        }
-        
-        // Development fallback
-        let projectRoot = URL(fileURLWithPath: "/Users/daniel/Dev/Symaira Dev/symaira-skills")
-        let devBinary = projectRoot.appendingPathComponent("symskills")
-        if FileManager.default.fileExists(atPath: devBinary.path) {
-            return devBinary
-        }
-        
-        return nil
+        locator.locate("symskills")?.url
     }
-    
+
     /// Core subprocess runner.
     private func runSubprocess(args: [String]) async throws -> Data {
         guard let binaryURL = locateBinary() else {
-            let errorMsg = "symskills binary not found in app bundle Resources or project path"
+            let errorMsg = "symskills binary not found. Install it via 'brew install danieljustus/tap/symskills' or build it first ('make build')."
             appendLog("ERROR: \(errorMsg)")
             throw NSError(domain: "SymskillsRunner", code: 404, userInfo: [NSLocalizedDescriptionKey: errorMsg])
         }
-        
+
         isRunning = true
         defer { isRunning = false }
-        
+
         let commandStr = "symskills " + args.joined(separator: " ")
         appendLog("Running: \(commandStr)")
-        
-        let proc = Process()
-        proc.executableURL = binaryURL
-        proc.arguments = args
-        
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        proc.standardOutput = stdoutPipe
-        proc.standardError = stderrPipe
-        
-        // Add environment paths for helper commands if needed
-        var env = ProcessInfo.processInfo.environment
-        if let path = env["PATH"] {
-            env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\(path)"
-        } else {
-            env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-        }
-        proc.environment = env
-        
-        let outFH = stdoutPipe.fileHandleForReading
-        let errFH = stderrPipe.fileHandleForReading
-        
-        let stdoutTask = Task {
-            return (try? outFH.readToEnd()) ?? Data()
-        }
-        let stderrTask = Task {
-            return (try? errFH.readToEnd()) ?? Data()
-        }
-        
+
+        let result: CLIResult
         do {
-            try proc.run()
+            result = try await runner.run(binaryURL, arguments: args)
         } catch {
-            let _ = await stdoutTask.value
-            let _ = await stderrTask.value
-            self.appendLog("Failed to run process: \(error.localizedDescription)")
+            appendLog("Failed to run process: \(error.localizedDescription)")
             throw error
         }
-        
-        proc.waitUntilExit()
-        
-        let outData = await stdoutTask.value
-        let errData = await stderrTask.value
-        
+
         // Log stderr if there is any
-        if !errData.isEmpty, let text = String(data: errData, encoding: .utf8) {
+        if !result.stderr.isEmpty, let text = String(data: result.stderr, encoding: .utf8) {
             for line in text.components(separatedBy: .newlines) {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
-                    self.appendLog("[stderr] \(trimmed)")
+                    appendLog("[stderr] \(trimmed)")
                 }
             }
         }
-        
-        let exitCode = proc.terminationStatus
-        if exitCode != 0 {
-            let errText = String(data: errData, encoding: .utf8) ?? ""
-            let cleanErr = errText.trimmingCharacters(in: .whitespacesAndNewlines)
-            self.appendLog("Process exited with code \(exitCode): \(cleanErr)")
-            throw NSError(domain: "SymskillsRunner", code: Int(exitCode), userInfo: [NSLocalizedDescriptionKey: cleanErr.isEmpty ? "Process exited with code \(exitCode)" : cleanErr])
+
+        if result.exitCode != 0 {
+            let cleanErr = result.stderrText
+            appendLog("Process exited with code \(result.exitCode): \(cleanErr)")
+            throw NSError(domain: "SymskillsRunner", code: Int(result.exitCode), userInfo: [NSLocalizedDescriptionKey: cleanErr.isEmpty ? "Process exited with code \(result.exitCode)" : cleanErr])
         } else {
-            self.appendLog("Completed successfully.")
-            return outData
+            appendLog("Completed successfully.")
+            return result.stdout
         }
     }
     
@@ -179,32 +145,17 @@ public final class CLICommandRunner {
         guard let binaryURL = locateBinary() else {
             throw NSError(domain: "SymskillsRunner", code: 404, userInfo: [NSLocalizedDescriptionKey: "symskills not found"])
         }
-        let proc = Process()
-        proc.executableURL = binaryURL
-        proc.arguments = ["validate", path, "--json"]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = Pipe()
-        
-        return try await withCheckedThrowingContinuation { continuation in
-            proc.terminationHandler = { process in
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                struct ValidateResult: Codable {
-                    let valid: Bool
-                    let issues: [Issue]
-                }
-                if let res = try? JSONDecoder().decode(ValidateResult.self, from: data) {
-                    continuation.resume(returning: res.issues)
-                } else {
-                    continuation.resume(returning: [])
-                }
-            }
-            do {
-                try proc.run()
-            } catch {
-                continuation.resume(throwing: error)
-            }
+        // Validation failures exit non-zero but still print the issue JSON
+        // on stdout, so decode regardless of the exit code.
+        let result = try await runner.run(binaryURL, arguments: ["validate", path, "--json"])
+        struct ValidateResult: Codable {
+            let valid: Bool
+            let issues: [Issue]
         }
+        if let res = try? JSONDecoder().decode(ValidateResult.self, from: result.stdout) {
+            return res.issues
+        }
+        return []
     }
     
     public func inspect(path: String) async throws -> SkillBundle {
