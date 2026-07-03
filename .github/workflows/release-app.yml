@@ -1,0 +1,36 @@
+name: Release App
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release-dmg:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.22.4'
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Run Package Script
+        run: ./client/package.sh
+
+      - name: Create Release and Upload DMG
+        uses: softprops/action-gh-release@v2
+        with:
+          files: client/build/Symskills.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

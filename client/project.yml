@@ -1,0 +1,49 @@
+name: Symskills
+options:
+  bundleIdPrefix: dev.symaira
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "16.0"
+  generateEmptyDirectories: false
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  Symskills:
+    type: application
+    platform: macOS
+    deploymentTarget:
+      macOS: "14.0"
+    sources:
+      - path: Sources/SymskillsApp
+      - path: Sources/SymskillsKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.symaira.Symskills
+        INFOPLIST_FILE: Sources/SymskillsApp/Info.plist
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: true
+        COMBINE_HIDPI_IMAGES: true
+    postBuildScripts:
+      - name: Embed symskills CLI
+        script: |
+          # Copy the pre-built symskills binary into Contents/Resources.
+          # Build it first: cd .. && make build
+          SRC="${PROJECT_DIR}/../symskills"
+          DST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources"
+          if [ -f "$SRC" ]; then
+            mkdir -p "$DST"
+            cp "$SRC" "$DST/symskills"
+            chmod +x "$DST/symskills"
+            echo "Embedded symskills binary into $DST/symskills"
+          else
+            echo "warning: symskills binary not found at $SRC — run 'make build' first"
+          fi
+        runOnlyWhenInstalling: false
+        basedOnDependencyAnalysis: false
