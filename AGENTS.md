@@ -41,3 +41,16 @@ make clean              # remove build/test artifacts
 - Prefer symlink installs; fall back to copy only when needed or explicitly requested.
 - Preserve script permissions when copying support files.
 - Keep JSON fields snake_case for CLI/MCP payloads.
+
+## macOS Client (`client/`)
+
+- SwiftUI app (XcodeGen: `cd client && xcodegen generate`, scheme `Symskills`;
+  local builds need `DEVELOPER_DIR` pointing at Xcode).
+- Depends on the shared **symaira-appkit** package, pinned exact (`0.1.0`) in
+  `client/project.yml`: SymairaTheme (this app donated the glassmorphism
+  components to the package; border opacities were unified to the shared
+  brand values), SymairaCLIRunner + SymairaToolKit (binary discovery +
+  subprocess execution in `SymskillsKit/CLICommandRunner.swift`).
+- Do not reintroduce app-local Theme/Process-runner code; extend
+  symaira-appkit instead. Migration context: see
+  `../docs/symaira-appkit-migration.md` (Welle 2).
