@@ -13,6 +13,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/danieljustus/symaira-corekit/exitcodes"
 	"github.com/danieljustus/symaira-corekit/logkit"
+	"github.com/danieljustus/symaira-corekit/versionkit"
 	"github.com/spf13/cobra"
 
 	"github.com/danieljustus/symaira-skills/internal/config"
@@ -52,6 +53,7 @@ func newRootCmd(version string) *cobra.Command {
 		newUninstallCmd(),
 		newDoctorCmd(),
 		newServeCmd(version),
+		newVersionCmd(version),
 	)
 	return root
 }
@@ -445,6 +447,24 @@ func targetsFromFlag(name string) ([]render.Target, error) {
 		targets = append(targets, target)
 	}
 	return targets, nil
+}
+
+func newVersionCmd(version string) *cobra.Command {
+	var flagJSON bool
+	cmd := &cobra.Command{
+		Use:   "version",
+		Short: "Print version",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			info := versionkit.New("symskills", version, 1)
+			if flagJSON {
+				return info.Write(cmd.OutOrStdout())
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), info.String())
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&flagJSON, "json", false, "Emit version as machine-readable JSON")
+	return cmd
 }
 
 func printJSON(cmd *cobra.Command, v any) error {

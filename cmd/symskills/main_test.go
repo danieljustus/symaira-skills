@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -48,6 +49,40 @@ func TestRenderCommandWritesCodexMetadata(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(outDir, "codex", "cli-render", "agents", "openai.yaml")); err != nil {
 		t.Fatalf("codex metadata missing: %v", err)
+	}
+}
+
+func TestVersionCommand(t *testing.T) {
+	var out bytes.Buffer
+	cmd := newRootCmd("1.2.3")
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"version"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("version execute error: %v", err)
+	}
+	if !strings.Contains(out.String(), "symskills 1.2.3") {
+		t.Errorf("expected version output, got: %q", out.String())
+	}
+
+	out.Reset()
+	cmdJSON := newRootCmd("1.2.3")
+	cmdJSON.SetOut(&out)
+	cmdJSON.SetErr(&out)
+	cmdJSON.SetArgs([]string{"version", "--json"})
+	if err := cmdJSON.Execute(); err != nil {
+		t.Fatalf("version json execute error: %v", err)
+	}
+	var resp struct {
+		Tool          string `json:"tool"`
+		Version       string `json:"version"`
+		SchemaVersion int    `json:"schema_version"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("parse version JSON: %v", err)
+	}
+	if resp.Tool != "symskills" || resp.Version != "1.2.3" || resp.SchemaVersion != 1 {
+		t.Errorf("unexpected version response payload: %+v", resp)
 	}
 }
 
