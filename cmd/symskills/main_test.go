@@ -9,27 +9,379 @@ import (
 	"testing"
 )
 
-func TestValidateCommandJSON(t *testing.T) {
-	root := t.TempDir()
-	writeTestSkill(t, root, "cli-skill", "CLI validation fixture.")
-
-	var out bytes.Buffer
-	cmd := newRootCmd("test")
+func runCmd(t *testing.T, homeDir string, args ...string) (string, string, error) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	cmd := newRootCmd("test-version")
 	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-	cmd.SetArgs([]string{"validate", "--json", root})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("validate: %v\n%s", err, out.String())
+	cmd.SetErr(&errOut)
+	cmd.SetArgs(args)
+	t.Setenv("HOME", homeDir)
+	err := cmd.Execute()
+	return out.String(), errOut.String(), err
+}
+
+func TestMainCmd(t *testing.T) {
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+	os.Args = []string{"symskills", "version"}
+	main()
+}
+
+func TestInitCommand(t *testing.T) {
+	home := t.TempDir()
+
+	// First init
+	stdout, stderr, err := runCmd(t, home, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v, stderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "Created") {
+		t.Errorf("expected Created in output, got: %q", stdout)
 	}
 
+	// Second init without force
+	stdout, stderr, err = runCmd(t, home, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	if !strings.Contains(stdout, "already exists") {
+		t.Errorf("expected already exists in output, got: %q", stdout)
+	}
+
+	// Third init with force
+	stdout, stderr, err = runCmd(t, home, "init", "--force")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	if !strings.Contains(stdout, "Created") {
+		t.Errorf("expected Created in output, got: %q", stdout)
+	}
+}
+
+func TestImportCommand(t *testing.T) {
+	home := t.TempDir()
+	// Initialize config
+	_, _, _ = runCmd(t, home, "init")
+
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "import-test", "For testing import")
+
+	// Standard import
+	stdout, stderr, err := runCmd(t, home, "import", skillDir)
+	if err != nil {
+		t.Fatalf("import failed: %v, stderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "Imported import-test") {
+		t.Errorf("unexpected output: %s", stdout)
+	}
+
+	// Duplicate import (should fail)
+	_, _, err = runCmd(t, home, "import", skillDir)
+	if err == nil {
+		t.Fatal("expected import duplicate to fail")
+	}
+
+	// Import with --json
+	skillDir2 := t.TempDir()
+	writeTestSkill(t, skillDir2, "import-json", "For testing JSON import")
+	stdout, _, err = runCmd(t, home, "import", "--json", skillDir2)
+	if err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
 	var resp struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse JSON output: %v, raw: %q", err, stdout)
+	}
+	if resp.Name != "import-json" {
+		t.Errorf("expected import-json, got: %s", resp.Name)
+	}
+}
+
+func TestInspectCommand(t *testing.T) {
+	home := t.TempDir()
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "inspect-test", "For testing inspect")
+
+	// Inspect standard
+	stdout, _, err := runCmd(t, home, "inspect", skillDir)
+	if err != nil {
+		t.Fatalf("inspect failed: %v", err)
+	}
+	if !strings.Contains(stdout, "inspect-test") || !strings.Contains(stdout, "For testing inspect") {
+		t.Errorf("unexpected output: %s", stdout)
+	}
+
+	// Inspect JSON
+	stdout, _, err = runCmd(t, home, "inspect", "--json", skillDir)
+	if err != nil {
+		t.Fatalf("inspect failed: %v", err)
+	}
+	var resp struct {
+		Frontmatter struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		} `json:"frontmatter"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse json: %v", err)
+	}
+	if resp.Frontmatter.Name != "inspect-test" {
+		t.Errorf("expected inspect-test, got: %s", resp.Frontmatter.Name)
+	}
+}
+
+func TestValidateCommand(t *testing.T) {
+	home := t.TempDir()
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "validate-test", "For testing validate")
+
+	// Validate standard
+	stdout, _, err := runCmd(t, home, "validate", skillDir)
+	if err != nil {
+		t.Fatalf("validate failed: %v", err)
+	}
+	if !strings.Contains(stdout, "valid") {
+		t.Errorf("unexpected output: %s", stdout)
+	}
+
+	// Validate JSON
+	stdout, _, err = runCmd(t, home, "validate", "--json", skillDir)
+	if err != nil {
+		t.Fatalf("validate failed: %v", err)
+	}
+	var respJSON struct {
 		Valid bool `json:"valid"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
-		t.Fatalf("parse JSON %q: %v", out.String(), err)
+	if err := json.Unmarshal([]byte(stdout), &respJSON); err != nil {
+		t.Fatalf("parse JSON %q: %v", stdout, err)
 	}
-	if !resp.Valid {
-		t.Fatalf("expected valid response, got %s", out.String())
+	if !respJSON.Valid {
+		t.Fatalf("expected valid response, got %s", stdout)
+	}
+
+	// Validate invalid skill
+	invalidDir := t.TempDir()
+	// Write invalid SKILL.md (missing description)
+	err = os.WriteFile(filepath.Join(invalidDir, "SKILL.md"), []byte("---\nname: bad-skill\ndescription: \"\"\n---\nbody\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err = runCmd(t, home, "validate", invalidDir)
+	if err == nil {
+		t.Fatal("expected validate to fail on invalid skill")
+	}
+	if !strings.Contains(stdout, "description_required") {
+		t.Errorf("expected error details in stdout, got: %s", stdout)
+	}
+
+	// Validate invalid path
+	_, _, err = runCmd(t, home, "validate", "/nonexistent/path")
+	if err == nil {
+		t.Fatal("expected validate to fail on nonexistent path")
+	}
+}
+
+func TestRenderCommand(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "render-test", "For testing render")
+
+	// Render standard
+	stdout, _, err := runCmd(t, home, "render", skillDir)
+	if err != nil {
+		t.Fatalf("render failed: %v", err)
+	}
+	if !strings.Contains(stdout, "opencode") {
+		t.Errorf("unexpected output: %s", stdout)
+	}
+
+	// Render JSON
+	stdout, _, err = runCmd(t, home, "render", "--json", skillDir)
+	if err != nil {
+		t.Fatalf("render failed: %v", err)
+	}
+	var resp []struct {
+		Target string `json:"target"`
+		Path   string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse JSON: %v", err)
+	}
+	if len(resp) == 0 {
+		t.Fatal("expected render results")
+	}
+
+	// Render with target
+	stdout, _, err = runCmd(t, home, "render", "--target", "opencode,claude", skillDir)
+	if err != nil {
+		t.Fatalf("render target failed: %v", err)
+	}
+	if !strings.Contains(stdout, "claude") {
+		t.Errorf("unexpected output: %s", stdout)
+	}
+
+	// Render invalid target
+	_, _, err = runCmd(t, home, "render", "--target", "invalid", skillDir)
+	if err == nil {
+		t.Fatal("expected render to fail on invalid target")
+	}
+
+	// Render nonexistent path
+	_, _, err = runCmd(t, home, "render", "/nonexistent")
+	if err == nil {
+		t.Fatal("expected render to fail on nonexistent path")
+	}
+}
+
+func TestDiffCommand(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "diff-test", "For testing diff")
+
+	// Install it first so we can diff
+	_, _, err := runCmd(t, home, "install", "--mode", "copy", skillDir)
+	if err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	// Diff standard (should show no changes)
+	stdout, _, err := runCmd(t, home, "diff", skillDir)
+	if err != nil {
+		t.Fatalf("diff failed: %v", err)
+	}
+	if stdout != "" {
+		t.Errorf("expected empty stdout for no changes, got: %q", stdout)
+	}
+
+	// Modify skill and diff
+	writeTestSkill(t, skillDir, "diff-test", "Modified description")
+	stdout, _, err = runCmd(t, home, "diff", skillDir)
+	if err != nil {
+		t.Fatalf("diff failed: %v", err)
+	}
+	if !strings.Contains(stdout, "modified") {
+		t.Errorf("expected modified in output, got: %s", stdout)
+	}
+
+	// Diff JSON
+	stdout, _, err = runCmd(t, home, "diff", "--json", skillDir)
+	if err != nil {
+		t.Fatalf("diff json failed: %v", err)
+	}
+	var resp []struct {
+		Path   string `json:"path"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse JSON: %v", err)
+	}
+	if len(resp) == 0 || resp[0].Status != "modified" {
+		t.Errorf("unexpected JSON resp: %+v", resp)
+	}
+
+	// Diff with invalid target
+	_, _, err = runCmd(t, home, "diff", "--target", "invalid", skillDir)
+	if err == nil {
+		t.Fatal("expected diff to fail on invalid target")
+	}
+}
+
+func TestInstallUninstallCommand(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "install-test", "For testing install")
+
+	// Dry run install
+	stdout, _, err := runCmd(t, home, "install", "--dry-run", skillDir)
+	if err != nil {
+		t.Fatalf("dry run install failed: %v", err)
+	}
+	if !strings.Contains(stdout, "planned") {
+		t.Errorf("expected planned in stdout, got: %s", stdout)
+	}
+
+	// Install JSON
+	stdout, _, err = runCmd(t, home, "install", "--json", "--mode", "copy", skillDir)
+	if err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+	var result struct {
+		Action string `json:"action"`
+		Name   string `json:"name"`
+		Path   string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("parse JSON: %v", err)
+	}
+	if result.Action != "installed" || result.Name != "install-test" {
+		t.Errorf("unexpected install result: %+v", result)
+	}
+
+	// Uninstall standard
+	stdout, _, err = runCmd(t, home, "uninstall", "install-test")
+	if err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+	if !strings.Contains(stdout, "Uninstalled install-test") {
+		t.Errorf("unexpected output: %s", stdout)
+	}
+
+	// Uninstall invalid target
+	_, _, err = runCmd(t, home, "uninstall", "--target", "invalid", "install-test")
+	if err == nil {
+		t.Fatal("expected uninstall to fail on invalid target")
+	}
+}
+
+func TestDoctorCommand(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	// Doctor standard
+	stdout, _, err := runCmd(t, home, "doctor")
+	if err != nil {
+		t.Fatalf("doctor failed: %v", err)
+	}
+	if !strings.Contains(stdout, "config:") || !strings.Contains(stdout, "library:") {
+		t.Errorf("unexpected output: %s", stdout)
+	}
+
+	// Doctor JSON
+	stdout, _, err = runCmd(t, home, "doctor", "--json")
+	if err != nil {
+		t.Fatalf("doctor failed: %v", err)
+	}
+	var resp struct {
+		ConfigPath string `json:"config_path"`
+		Config     any    `json:"config"`
+		Targets    []any  `json:"targets"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse JSON: %v", err)
+	}
+	if resp.ConfigPath == "" {
+		t.Error("expected config_path to be populated")
+	}
+}
+
+func TestServeCommand(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	// Serve without stdio (should fail)
+	_, _, err := runCmd(t, home, "serve")
+	if err == nil {
+		t.Fatal("expected serve without --stdio to fail")
 	}
 }
 
