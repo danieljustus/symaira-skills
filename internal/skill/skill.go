@@ -4,7 +4,6 @@ package skill
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/danieljustus/symaira-skills/internal/fsutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -219,57 +219,12 @@ func ImportSkill(srcRoot, libraryDir string) (ImportResult, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return ImportResult{}, err
 	}
-	if err := copyDir(srcRoot, dst); err != nil {
+	if err := fsutil.CopyTree(srcRoot, dst, func(rel string, d os.DirEntry) bool {
+		return d.Name() == ".git" && d.IsDir()
+	}); err != nil {
 		return ImportResult{}, err
 	}
 	return ImportResult{Name: name, Path: dst}, nil
-}
-
-func copyDir(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return os.MkdirAll(dst, 0o755)
-		}
-		if d.Name() == ".git" && d.IsDir() {
-			return filepath.SkipDir
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		return copyFile(path, target, info.Mode().Perm())
-	})
-}
-
-func copyFile(src, dst string, perm os.FileMode) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	return out.Close()
 }
 
 // ListLibrary returns loaded bundles under a library directory.
