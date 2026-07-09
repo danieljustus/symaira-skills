@@ -129,6 +129,7 @@ func newImportCmd() *cobra.Command {
 func newListCmd() *cobra.Command {
 	var library string
 	var jsonOut bool
+	var strict bool
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List skills in the symskills library",
@@ -156,11 +157,22 @@ func newListCmd() *cobra.Command {
 			for _, item := range items {
 				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", item.Name, item.Description, item.Path)
 			}
+			for _, issue := range issues {
+				if issue.Path != "" {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s: %s\n", issue.Path, issue.Message)
+				} else {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", issue.Message)
+				}
+			}
+			if strict && len(issues) > 0 {
+				return exitcodes.Wrap(fmt.Errorf("library load issues detected"), exitcodes.ExitData, exitcodes.KindValidation, "list library")
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&library, "library", "", "Library directory")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
+	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero when library load issues exist")
 	return cmd
 }
 
