@@ -234,6 +234,73 @@ Test description
 	if err == nil {
 		t.Fatal("expected error for nonexistent skill name")
 	}
+
+	in = json.RawMessage(`{}`)
+	_, err = callInspect(context.Background(), srv, Options{LibraryDir: filepath.Join(tmpDir, "lib")}, in)
+	if err == nil {
+		t.Fatal("expected error when path and name are missing")
+	}
+	if !strings.Contains(err.Error(), "path or name") {
+		t.Fatalf("expected 'path or name' error, got: %v", err)
+	}
+}
+
+func TestSkillsInspectRequiresPathOrName(t *testing.T) {
+	srv := mcpserver.New("symskills", "test")
+	tmpDir := t.TempDir()
+	Register(srv, Options{LibraryDir: filepath.Join(tmpDir, "lib")})
+
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"skills_inspect","arguments":{}}}` + "\n"
+	var out strings.Builder
+	if err := srv.ServeIO(context.Background(), strings.NewReader(req), &out); err != nil {
+		t.Fatalf("ServeIO: %v", err)
+	}
+
+	var resp struct {
+		Result struct {
+			IsError bool `json:"isError"`
+		} `json:"result"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &resp); err != nil {
+		t.Fatalf("parse response %q: %v", out.String(), err)
+	}
+
+	if resp.Error == nil && !resp.Result.IsError {
+		t.Fatal("expected error when path and name are missing")
+	}
+}
+
+func TestSkillsRenderPlanRejectsMalformedArguments(t *testing.T) {
+	srv := mcpserver.New("symskills", "test")
+	tmpDir := t.TempDir()
+	Register(srv, Options{LibraryDir: filepath.Join(tmpDir, "lib"), RenderDir: filepath.Join(tmpDir, "render")})
+
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"skills_render_plan","arguments":{"target":123}}}` + "\n"
+	var out strings.Builder
+	if err := srv.ServeIO(context.Background(), strings.NewReader(req), &out); err != nil {
+		t.Fatalf("ServeIO: %v", err)
+	}
+
+	var resp struct {
+		Result struct {
+			IsError bool `json:"isError"`
+		} `json:"result"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &resp); err != nil {
+		t.Fatalf("parse response %q: %v", out.String(), err)
+	}
+
+	if resp.Error == nil && !resp.Result.IsError {
+		t.Fatal("expected error for malformed arguments")
+	}
 }
 
 func TestOptionsDefaults(t *testing.T) {

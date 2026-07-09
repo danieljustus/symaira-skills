@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/danieljustus/symaira-corekit/exitcodes"
 	"github.com/danieljustus/symaira-corekit/mcpserver"
 	"github.com/danieljustus/symaira-skills/internal/config"
 	"github.com/danieljustus/symaira-skills/internal/install"
@@ -56,17 +57,8 @@ func Register(srv *mcpserver.Server, opts Options) {
 		Name:        "skills_inspect",
 		Description: "Inspect one skill by path or library name.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"name":{"type":"string"}}}`),
-		Handler: func(_ context.Context, in json.RawMessage) (any, error) {
-			var args struct {
-				Path string `json:"path"`
-				Name string `json:"name"`
-			}
-			_ = json.Unmarshal(in, &args)
-			root := args.Path
-			if root == "" && args.Name != "" {
-				root = filepath.Join(opts.LibraryDir, args.Name)
-			}
-			return skill.LoadBundle(root)
+		Handler: func(ctx context.Context, in json.RawMessage) (any, error) {
+			return callInspect(ctx, srv, opts, in)
 		},
 	})
 	srv.RegisterTool(&mcpserver.Tool{
@@ -89,7 +81,9 @@ func Register(srv *mcpserver.Server, opts Options) {
 			var args struct {
 				Target string `json:"target"`
 			}
-			_ = json.Unmarshal(in, &args)
+			if err := json.Unmarshal(in, &args); err != nil {
+				return nil, exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "parse arguments")
+			}
 			bundle, err := callInspect(ctx, srv, opts, in)
 			if err != nil {
 				return nil, err
@@ -119,7 +113,9 @@ func Register(srv *mcpserver.Server, opts Options) {
 				Scope  string `json:"scope"`
 				DryRun *bool  `json:"dry_run"`
 			}
-			_ = json.Unmarshal(in, &args)
+			if err := json.Unmarshal(in, &args); err != nil {
+				return nil, exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "parse arguments")
+			}
 			target := render.TargetOpenCode
 			if args.Target != "" {
 				parsed, err := render.ParseTarget(args.Target)
@@ -161,10 +157,15 @@ func callInspect(_ context.Context, _ *mcpserver.Server, opts Options, in json.R
 		Path string `json:"path"`
 		Name string `json:"name"`
 	}
-	_ = json.Unmarshal(in, &args)
+	if err := json.Unmarshal(in, &args); err != nil {
+		return nil, exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "parse arguments")
+	}
 	root := args.Path
 	if root == "" && args.Name != "" {
 		root = filepath.Join(opts.LibraryDir, args.Name)
+	}
+	if root == "" {
+		return nil, exitcodes.Wrap(fmt.Errorf("path or name is required"), exitcodes.ExitData, exitcodes.KindValidation, "inspect skill")
 	}
 	return skill.LoadBundle(root)
 }
