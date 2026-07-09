@@ -241,3 +241,24 @@ enabled = false
 		t.Fatalf("want 3 errors (opencode disabled, claude hostile, hermes disabled), got %d: %v", len(errs), errs)
 	}
 }
+
+func TestParseTarget(t *testing.T) {
+	valid := []Target{TargetOpenCode, TargetClaude, TargetCodex, TargetHermes}
+	for _, target := range valid {
+		got, err := ParseTarget(string(target))
+		if err != nil {
+			t.Fatalf("expected target %q to parse successfully, got: %v", target, err)
+		}
+		if got != target {
+			t.Errorf("ParseTarget(%q) = %q, want %q", target, got, target)
+		}
+	}
+
+	invalid := []string{"", "invalid-target", "open-code", "CLAUDE"}
+	for _, s := range invalid {
+		_, err := ParseTarget(s)
+		if err == nil {
+			t.Fatalf("expected error parsing invalid target %q, but got nil", s)
+		}
+	}
+}
