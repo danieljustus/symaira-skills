@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/danieljustus/symaira-skills/internal/render"
+	"github.com/danieljustus/symaira-skills/internal/skill"
 )
 
 const markerFile = ".symskills.json"
@@ -134,6 +135,9 @@ func markerBytes(item RenderedSkill, mode Mode) []byte {
 }
 
 func InstallPath(target render.Target, name string, opts Options) (string, error) {
+	if err := skill.ValidateSkillName(name); err != nil {
+		return "", fmt.Errorf("invalid install name for target %s: %w", target, err)
+	}
 	home := opts.HomeDir
 	if home == "" {
 		var err error

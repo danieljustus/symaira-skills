@@ -138,6 +138,16 @@ func parseSkillMD(raw []byte) (Frontmatter, string, error) {
 	return fm, body, nil
 }
 
+func ValidateSkillName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("skill name is required")
+	}
+	if !skillNamePattern.MatchString(name) {
+		return fmt.Errorf("skill name %q must be a single lowercase alphanumeric-dash segment", name)
+	}
+	return nil
+}
+
 // Validate returns non-fatal validation issues for a loaded bundle.
 func Validate(bundle *Bundle) []Issue {
 	if bundle == nil {

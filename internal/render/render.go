@@ -68,6 +68,9 @@ func RenderTarget(bundle *skill.Bundle, target Target) (Rendered, error) {
 	if err := applyFrontmatterOverlay(bundle.Root, target, &fm); err != nil {
 		return Rendered{}, err
 	}
+	if err := skill.ValidateSkillName(fm.Name); err != nil {
+		return Rendered{}, fmt.Errorf("invalid resolved name for target %s: %w", target, err)
+	}
 	body, err := renderBody(bundle, target, cfg)
 	if err != nil {
 		return Rendered{}, err

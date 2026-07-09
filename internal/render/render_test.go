@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,5 +111,88 @@ func writeFile(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRenderTargetRejectsHostileResolvedNames(t *testing.T) {
+	cases := []struct {
+		name            string
+		frontmatterName string
+		manifest        string
+		overlay         string
+	}{
+		{
+			name:            "alias_with_path_traversal",
+			frontmatterName: "safe",
+			manifest: `[skill]
+name = "safe"
+version = "0.1.0"
+
+[targets.opencode]
+enabled = true
+alias = "../../evil"
+`,
+		},
+		{
+			name:            "manifest_name_with_separator",
+			frontmatterName: "safe",
+			manifest: `[skill]
+name = "evil/name"
+version = "0.1.0"
+
+[targets.opencode]
+enabled = true
+`,
+		},
+		{
+			name:            "overlay_name_with_path_traversal",
+			frontmatterName: "safe",
+			manifest: `[skill]
+name = "safe"
+version = "0.1.0"
+
+[targets.opencode]
+enabled = true
+`,
+			overlay: `name = "../evil"
+`,
+		},
+		{
+			name:            "frontmatter_name_absolute_path",
+			frontmatterName: "/etc/evil",
+			manifest: `[skill]
+version = "0.1.0"
+
+[targets.opencode]
+enabled = true
+`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "SKILL.md"), fmt.Sprintf(`---
+name: %s
+description: Test.
+---
+
+Body.
+`, tc.frontmatterName))
+			writeFile(t, filepath.Join(root, "symskills.toml"), tc.manifest)
+			if tc.overlay != "" {
+				writeFile(t, filepath.Join(root, "overlays", "opencode", "frontmatter.toml"), tc.overlay)
+			}
+
+			bundle, err := skill.LoadBundle(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = RenderTarget(bundle, TargetOpenCode)
+			if err == nil {
+				t.Fatal("expected error for hostile resolved name")
+			}
+		})
 	}
 }
