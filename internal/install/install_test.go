@@ -69,6 +69,16 @@ func TestDiffReportsChangedFiles(t *testing.T) {
 	}
 }
 
+func TestInstallPathRejectsHostileNames(t *testing.T) {
+	hostile := []string{"../evil", "evil/name", "/etc/evil", ".."}
+	for _, name := range hostile {
+		_, err := InstallPath(render.TargetOpenCode, name, Options{})
+		if err == nil {
+			t.Fatalf("expected error for name %q", name)
+		}
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

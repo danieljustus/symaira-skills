@@ -239,9 +239,9 @@ func newRenderCmd() *cobra.Command {
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "load skill")
 			}
-			results, err := render.RenderAll(bundle, output, targets)
-			if err != nil {
-				return exitcodes.Wrap(err, exitcodes.ExitSoftware, exitcodes.KindInternal, "render skill")
+			results, errs := render.RenderAll(bundle, output, targets)
+			if len(errs) > 0 {
+				return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render skill")
 			}
 			if jsonOut {
 				return printJSON(cmd, results)
@@ -281,9 +281,12 @@ func newDiffCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rendered, err := render.RenderAll(bundle, output, []render.Target{target})
-			if err != nil {
-				return err
+			rendered, errs := render.RenderAll(bundle, output, []render.Target{target})
+			if len(rendered) == 0 {
+				if len(errs) > 0 {
+					return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
+				}
+				return exitcodes.Wrap(fmt.Errorf("target %s produced no render output", target), exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
 			}
 			installedPath, err := install.InstallPath(target, rendered[0].Name, install.Options{Scope: install.ScopeUser})
 			if err != nil {
@@ -331,9 +334,12 @@ func newInstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rendered, err := render.RenderAll(bundle, output, []render.Target{target})
-			if err != nil {
-				return err
+			rendered, errs := render.RenderAll(bundle, output, []render.Target{target})
+			if len(rendered) == 0 {
+				if len(errs) > 0 {
+					return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
+				}
+				return exitcodes.Wrap(fmt.Errorf("target %s produced no render output", target), exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
 			}
 			opts := install.Options{Scope: install.Scope(scopeName), Mode: install.Mode(modeName), DryRun: dryRun}
 			result, err := install.Install(install.RenderedSkill{Target: target, Name: rendered[0].Name, Path: rendered[0].Path}, opts)

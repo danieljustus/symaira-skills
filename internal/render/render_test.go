@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,9 +84,9 @@ Body.
 	}
 
 	out := filepath.Join(t.TempDir(), "rendered")
-	results, err := RenderAll(bundle, out, []Target{TargetOpenCode, TargetClaude, TargetCodex, TargetHermes})
-	if err != nil {
-		t.Fatalf("RenderAll: %v", err)
+	results, errs := RenderAll(bundle, out, []Target{TargetOpenCode, TargetClaude, TargetCodex, TargetHermes})
+	if len(errs) != 0 {
+		t.Fatalf("RenderAll errors: %v", errs)
 	}
 	if len(results) != 4 {
 		t.Fatalf("want 4 rendered targets, got %d", len(results))
@@ -110,5 +111,133 @@ func writeFile(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRenderTargetRejectsHostileResolvedNames(t *testing.T) {
+	cases := []struct {
+		name            string
+		frontmatterName string
+		manifest        string
+		overlay         string
+	}{
+		{
+			name:            "alias_with_path_traversal",
+			frontmatterName: "safe",
+			manifest: `[skill]
+name = "safe"
+version = "0.1.0"
+
+[targets.opencode]
+enabled = true
+alias = "../../evil"
+`,
+		},
+		{
+			name:            "manifest_name_with_separator",
+			frontmatterName: "safe",
+			manifest: `[skill]
+name = "evil/name"
+version = "0.1.0"
+
+[targets.opencode]
+enabled = true
+`,
+		},
+		{
+			name:            "overlay_name_with_path_traversal",
+			frontmatterName: "safe",
+			manifest: `[skill]
+name = "safe"
+version = "0.1.0"
+
+[targets.opencode]
+enabled = true
+`,
+			overlay: `name = "../evil"
+`,
+		},
+		{
+			name:            "frontmatter_name_absolute_path",
+			frontmatterName: "/etc/evil",
+			manifest: `[skill]
+version = "0.1.0"
+
+[targets.opencode]
+enabled = true
+`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "SKILL.md"), fmt.Sprintf(`---
+name: %s
+description: Test.
+---
+
+Body.
+`, tc.frontmatterName))
+			writeFile(t, filepath.Join(root, "symskills.toml"), tc.manifest)
+			if tc.overlay != "" {
+				writeFile(t, filepath.Join(root, "overlays", "opencode", "frontmatter.toml"), tc.overlay)
+			}
+
+			bundle, err := skill.LoadBundle(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = RenderTarget(bundle, TargetOpenCode)
+			if err == nil {
+				t.Fatal("expected error for hostile resolved name")
+			}
+		})
+	}
+}
+
+func TestRenderAllReportsPerTargetErrors(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: error-test
+description: Test.
+---
+
+Body.
+`)
+	writeFile(t, filepath.Join(root, "symskills.toml"), `[skill]
+name = "error-test"
+version = "0.1.0"
+
+[targets.opencode]
+enabled = false
+
+[targets.claude]
+enabled = true
+alias = "../../evil"
+
+[targets.codex]
+enabled = true
+
+[targets.hermes]
+enabled = false
+`)
+
+	bundle, err := skill.LoadBundle(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "rendered")
+	results, errs := RenderAll(bundle, out, []Target{TargetOpenCode, TargetClaude, TargetCodex, TargetHermes})
+	if len(results) != 1 {
+		t.Fatalf("want 1 successful render (codex), got %d", len(results))
+	}
+	if results[0].Target != TargetCodex {
+		t.Fatalf("want codex success, got %s", results[0].Target)
+	}
+	if len(errs) != 3 {
+		t.Fatalf("want 3 errors (opencode disabled, claude hostile, hermes disabled), got %d: %v", len(errs), errs)
 	}
 }

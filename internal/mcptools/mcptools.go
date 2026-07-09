@@ -4,6 +4,7 @@ package mcptools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -101,7 +102,11 @@ func Register(srv *mcpserver.Server, opts Options) {
 				}
 				targets = []render.Target{target}
 			}
-			return render.RenderAll(bundle, opts.RenderDir, targets)
+			rendered, errs := render.RenderAll(bundle, opts.RenderDir, targets)
+			if len(rendered) == 0 && len(errs) > 0 {
+				return nil, errs[0]
+			}
+			return rendered, nil
 		},
 	})
 	srv.RegisterTool(&mcpserver.Tool{
@@ -127,9 +132,12 @@ func Register(srv *mcpserver.Server, opts Options) {
 			if err != nil {
 				return nil, err
 			}
-			rendered, err := render.RenderAll(bundle, opts.RenderDir, []render.Target{target})
-			if err != nil {
-				return nil, err
+			rendered, errs := render.RenderAll(bundle, opts.RenderDir, []render.Target{target})
+			if len(rendered) == 0 {
+				if len(errs) > 0 {
+					return nil, errs[0]
+				}
+				return nil, fmt.Errorf("target %s produced no render output", target)
 			}
 			dryRun := true
 			if args.DryRun != nil {

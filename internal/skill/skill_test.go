@@ -88,6 +88,21 @@ Body.
 	}
 }
 
+func TestValidateSkillNameAcceptsValidAndRejectsInvalidNames(t *testing.T) {
+	valid := []string{"repo-review", "a", "my-skill-1", "opencode-123"}
+	for _, name := range valid {
+		if err := ValidateSkillName(name); err != nil {
+			t.Fatalf("expected %q to be valid, got %v", name, err)
+		}
+	}
+	invalid := []string{"", "Bad_Name", "evil/name", "../evil", "/etc/evil", "..", "skill.name", "UPPER"}
+	for _, name := range invalid {
+		if err := ValidateSkillName(name); err == nil {
+			t.Fatalf("expected %q to be invalid", name)
+		}
+	}
+}
+
 func TestImportSkillCopiesExistingSkillIntoLibrary(t *testing.T) {
 	src := t.TempDir()
 	writeFile(t, filepath.Join(src, "SKILL.md"), `---
