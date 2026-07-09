@@ -159,25 +159,29 @@ func encodeSkillMD(fm skill.Frontmatter, body string) (string, error) {
 	return "---\n" + string(data) + "---\n\n" + body, nil
 }
 
-// RenderAll writes target-specific skill folders under outDir.
-func RenderAll(bundle *skill.Bundle, outDir string, targets []Target) ([]Rendered, error) {
+// RenderAll writes target-specific skill folders under outDir and returns the
+// successfully rendered items along with any per-target errors.
+func RenderAll(bundle *skill.Bundle, outDir string, targets []Target) ([]Rendered, []error) {
 	if len(targets) == 0 {
 		targets = DefaultTargets
 	}
 	var rendered []Rendered
+	var errs []error
 	for _, target := range targets {
 		item, err := RenderTarget(bundle, target)
 		if err != nil {
+			errs = append(errs, fmt.Errorf("target %s: %w", target, err))
 			continue
 		}
 		dst := filepath.Join(outDir, string(target), item.Name)
 		if err := writeRendered(bundle.Root, dst, item, target); err != nil {
-			return nil, err
+			errs = append(errs, fmt.Errorf("target %s: %w", target, err))
+			continue
 		}
 		item.Path = dst
 		rendered = append(rendered, item)
 	}
-	return rendered, nil
+	return rendered, errs
 }
 
 func writeRendered(root, dst string, item Rendered, target Target) error {

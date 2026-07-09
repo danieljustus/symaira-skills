@@ -84,9 +84,9 @@ Body.
 	}
 
 	out := filepath.Join(t.TempDir(), "rendered")
-	results, err := RenderAll(bundle, out, []Target{TargetOpenCode, TargetClaude, TargetCodex, TargetHermes})
-	if err != nil {
-		t.Fatalf("RenderAll: %v", err)
+	results, errs := RenderAll(bundle, out, []Target{TargetOpenCode, TargetClaude, TargetCodex, TargetHermes})
+	if len(errs) != 0 {
+		t.Fatalf("RenderAll errors: %v", errs)
 	}
 	if len(results) != 4 {
 		t.Fatalf("want 4 rendered targets, got %d", len(results))
@@ -194,5 +194,50 @@ Body.
 				t.Fatal("expected error for hostile resolved name")
 			}
 		})
+	}
+}
+
+func TestRenderAllReportsPerTargetErrors(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: error-test
+description: Test.
+---
+
+Body.
+`)
+	writeFile(t, filepath.Join(root, "symskills.toml"), `[skill]
+name = "error-test"
+version = "0.1.0"
+
+[targets.opencode]
+enabled = false
+
+[targets.claude]
+enabled = true
+alias = "../../evil"
+
+[targets.codex]
+enabled = true
+
+[targets.hermes]
+enabled = false
+`)
+
+	bundle, err := skill.LoadBundle(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "rendered")
+	results, errs := RenderAll(bundle, out, []Target{TargetOpenCode, TargetClaude, TargetCodex, TargetHermes})
+	if len(results) != 1 {
+		t.Fatalf("want 1 successful render (codex), got %d", len(results))
+	}
+	if results[0].Target != TargetCodex {
+		t.Fatalf("want codex success, got %s", results[0].Target)
+	}
+	if len(errs) != 3 {
+		t.Fatalf("want 3 errors (opencode disabled, claude hostile, hermes disabled), got %d: %v", len(errs), errs)
 	}
 }
