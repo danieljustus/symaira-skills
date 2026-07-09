@@ -33,6 +33,60 @@ func TestValidateCommandJSON(t *testing.T) {
 	}
 }
 
+func TestListCommandPrintsLoadIssuesToStderr(t *testing.T) {
+	root := t.TempDir()
+	library := filepath.Join(root, "library")
+	healthy := filepath.Join(library, "healthy-skill")
+	broken := filepath.Join(library, "broken-skill")
+	if err := os.MkdirAll(healthy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSkill(t, healthy, "healthy-skill", "Healthy fixture.")
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, stderr bytes.Buffer
+	cmd := newRootCmd("test")
+	cmd.SetOut(&out)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"list", "--library", library})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("list: %v\nstdout: %s\nstderr: %s", err, out.String(), stderr.String())
+	}
+
+	stdout := out.String()
+	if !strings.Contains(stdout, "healthy-skill") {
+		t.Errorf("expected healthy skill in stdout, got: %q", stdout)
+	}
+
+	stderrStr := stderr.String()
+	if !strings.Contains(stderrStr, "warning:") {
+		t.Errorf("expected warning in stderr, got: %q", stderrStr)
+	}
+	if !strings.Contains(stderrStr, "broken-skill") {
+		t.Errorf("expected broken skill path in stderr, got: %q", stderrStr)
+	}
+}
+
+func TestListCommandStrictExitsNonZero(t *testing.T) {
+	root := t.TempDir()
+	library := filepath.Join(root, "library")
+	broken := filepath.Join(library, "broken-skill")
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, stderr bytes.Buffer
+	cmd := newRootCmd("test")
+	cmd.SetOut(&out)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"list", "--library", library, "--strict"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected non-zero exit in strict mode")
+	}
+}
+
 func TestRenderCommandWritesCodexMetadata(t *testing.T) {
 	root := t.TempDir()
 	writeTestSkill(t, root, "cli-render", "CLI render fixture.")
