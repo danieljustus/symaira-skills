@@ -79,6 +79,68 @@ func TestInstallPathRejectsHostileNames(t *testing.T) {
 	}
 }
 
+func TestInstallPathScopeProject(t *testing.T) {
+	project := t.TempDir()
+	opts := Options{ProjectDir: project, Scope: ScopeProject}
+
+	cases := []struct {
+		target render.Target
+		sub    []string
+	}{
+		{render.TargetOpenCode, []string{".opencode", "skills", "my-skill"}},
+		{render.TargetClaude, []string{".claude", "skills", "my-skill"}},
+		{render.TargetCodex, []string{".agents", "skills", "my-skill"}},
+		{render.TargetHermes, []string{".hermes", "skills", "my-skill"}},
+	}
+	for _, c := range cases {
+		got, err := InstallPath(c.target, "my-skill", opts)
+		if err != nil {
+			t.Fatalf("InstallPath(%s, ScopeProject): %v", c.target, err)
+		}
+		want := filepath.Join(append([]string{project}, c.sub...)...)
+		if got != want {
+			t.Errorf("InstallPath(%s, ScopeProject) = %q, want %q", c.target, got, want)
+		}
+	}
+
+	// unknown target with project scope
+	_, err := InstallPath("unknown-target", "my-skill", opts)
+	if err == nil {
+		t.Fatal("expected error for unknown target with project scope")
+	}
+}
+
+func TestInstallPathUserAllTargets(t *testing.T) {
+	home := t.TempDir()
+	opts := Options{HomeDir: home, Scope: ScopeUser}
+
+	cases := []struct {
+		target render.Target
+		sub    []string
+	}{
+		{render.TargetOpenCode, []string{".config", "opencode", "skills", "my-skill"}},
+		{render.TargetClaude, []string{".claude", "skills", "my-skill"}},
+		{render.TargetCodex, []string{".agents", "skills", "my-skill"}},
+		{render.TargetHermes, []string{".hermes", "skills", "symaira", "my-skill"}},
+	}
+	for _, c := range cases {
+		got, err := InstallPath(c.target, "my-skill", opts)
+		if err != nil {
+			t.Fatalf("InstallPath(%s, ScopeUser): %v", c.target, err)
+		}
+		want := filepath.Join(append([]string{home}, c.sub...)...)
+		if got != want {
+			t.Errorf("InstallPath(%s, ScopeUser) = %q, want %q", c.target, got, want)
+		}
+	}
+
+	// unknown target with user scope
+	_, err := InstallPath("unknown-target", "my-skill", opts)
+	if err == nil {
+		t.Fatal("expected error for unknown target with user scope")
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
