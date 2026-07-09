@@ -23,7 +23,7 @@ import (
 	"github.com/danieljustus/symaira-skills/internal/skill"
 )
 
-var version = "0.1.2"
+var version = "0.1.3"
 
 func main() {
 	slog.SetDefault(logkit.NewFromEnv("symskills"))
