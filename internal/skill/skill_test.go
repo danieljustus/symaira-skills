@@ -131,6 +131,110 @@ Body.
 	}
 }
 
+func TestValidateWithOverlays(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "SKILL.md"), `---
+name: overlay-test
+description: Testing safeRelativeFile
+---
+Body.
+`)
+
+	// 1. Missing reference file
+	writeFile(t, filepath.Join(dir, "symskills.toml"), `[skill]
+name = "overlay-test"
+
+[targets.opencode]
+enabled = true
+prepend = "prep.md"
+`)
+
+	bundle, err := LoadBundle(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	issues := Validate(bundle)
+	if !HasIssue(issues, "overlay_reference_missing") {
+		t.Fatalf("expected overlay_reference_missing issue, got: %#v", issues)
+	}
+
+	// 2. Absolute path reference
+	writeFile(t, filepath.Join(dir, "symskills.toml"), `[skill]
+name = "overlay-test"
+
+[targets.opencode]
+enabled = true
+prepend = "/abs/path.md"
+`)
+	bundle, _ = LoadBundle(dir)
+	issues = Validate(bundle)
+	if !HasIssue(issues, "overlay_reference_missing") {
+		t.Fatalf("expected overlay_reference_missing issue on absolute path, got: %#v", issues)
+	}
+
+	// 3. Escaping path reference
+	writeFile(t, filepath.Join(dir, "symskills.toml"), `[skill]
+name = "overlay-test"
+
+[targets.opencode]
+enabled = true
+prepend = "../escape.md"
+`)
+	bundle, _ = LoadBundle(dir)
+	issues = Validate(bundle)
+	if !HasIssue(issues, "overlay_reference_missing") {
+		t.Fatalf("expected overlay_reference_missing issue on escaping path, got: %#v", issues)
+	}
+
+	// 4. Valid reference
+	writeFile(t, filepath.Join(dir, "prep.md"), "prepend content")
+	writeFile(t, filepath.Join(dir, "symskills.toml"), `[skill]
+name = "overlay-test"
+
+[targets.opencode]
+enabled = true
+prepend = "prep.md"
+`)
+	bundle, _ = LoadBundle(dir)
+	issues = Validate(bundle)
+	if HasIssue(issues, "overlay_reference_missing") {
+		t.Fatalf("unexpected overlay_reference_missing issue for valid prepend: %#v", issues)
+	}
+}
+
+func TestListLibrary(t *testing.T) {
+	// 1. Nonexistent library directory
+	bundles, issues := ListLibrary("/nonexistent/library")
+	if bundles != nil || issues != nil {
+		t.Fatalf("expected nil list and issues for nonexistent library, got bundles=%v, issues=%v", bundles, issues)
+	}
+
+	// 2. Healthy library directory
+	lib := t.TempDir()
+	skill1 := filepath.Join(lib, "skill-one")
+	writeFile(t, filepath.Join(skill1, "SKILL.md"), "---\nname: skill-one\ndescription: Test\n---\nBody\n")
+
+	// Add a non-directory entry to test it's skipped
+	if err := os.WriteFile(filepath.Join(lib, "regular-file.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a broken skill directory
+	skill2 := filepath.Join(lib, "skill-two")
+	if err := os.MkdirAll(skill2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	bundles, issues = ListLibrary(lib)
+	if len(bundles) != 1 || bundles[0].Frontmatter.Name != "skill-one" {
+		t.Errorf("expected 1 bundle skill-one, got bundles: %#v", bundles)
+	}
+	if len(issues) != 1 || issues[0].Code != "skill_load" {
+		t.Errorf("expected 1 skill_load issue, got: %#v", issues)
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
