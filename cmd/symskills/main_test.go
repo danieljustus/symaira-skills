@@ -492,6 +492,299 @@ func TestVersionCommand(t *testing.T) {
 	}
 }
 
+// setupProfileTest creates a temp HOME with config, library containing a test
+// skill, and a global profiles dir with the given profile TOML content.
+// Returns (home, profilesDir, libraryDir).
+func setupProfileTest(t *testing.T, profileName, profileTOML string) (home, profilesDir, libraryDir string) {
+	t.Helper()
+	home = t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	profilesDir = filepath.Join(home, ".config", "symskills", "profiles")
+	libraryDir = filepath.Join(home, ".local", "share", "symskills", "library")
+
+	skillDir := filepath.Join(libraryDir, "test-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSkill(t, skillDir, "test-skill", "A test skill for profile tests")
+
+	if err := os.MkdirAll(profilesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profilesDir, profileName+".toml"), []byte(profileTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+func TestProfileListCommand(t *testing.T) {
+	home, _, _ := setupProfileTest(t, "my-profile",
+		`name = "my-profile"
+description = "A test profile"
+
+[links]
+test-skill = { skill = "test-skill" }
+`)
+
+	stdout, stderr, err := runCmd(t, home, "profile", "list")
+	if err != nil {
+		t.Fatalf("profile list failed: %v, stderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "my-profile") {
+		t.Errorf("expected my-profile in output, got: %q", stdout)
+	}
+
+	stdout, stderr, err = runCmd(t, home, "profile", "list", "--json")
+	if err != nil {
+		t.Fatalf("profile list --json failed: %v, stderr: %s", err, stderr)
+	}
+	var refs []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &refs); err != nil {
+		t.Fatalf("parse JSON: %v, raw: %q", err, stdout)
+	}
+	if len(refs) == 0 || refs[0].Name != "my-profile" {
+		t.Errorf("expected my-profile in JSON, got: %+v", refs)
+	}
+}
+
+func TestProfileResolveCommand(t *testing.T) {
+	home, _, _ := setupProfileTest(t, "my-profile",
+		`name = "my-profile"
+description = "A test profile"
+
+[links]
+test-skill = { skill = "test-skill" }
+`)
+
+	stdout, stderr, err := runCmd(t, home, "profile", "resolve", "my-profile")
+	if err != nil {
+		t.Fatalf("profile resolve failed: %v, stderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "test-skill") {
+		t.Errorf("expected test-skill in output, got: %q", stdout)
+	}
+
+	stdout, stderr, err = runCmd(t, home, "profile", "resolve", "my-profile", "--json")
+	if err != nil {
+		t.Fatalf("profile resolve --json failed: %v, stderr: %s", err, stderr)
+	}
+	var result struct {
+		Skills []struct {
+			Name string `json:"name"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("parse JSON: %v, raw: %q", err, stdout)
+	}
+	if len(result.Skills) == 0 || result.Skills[0].Name != "test-skill" {
+		t.Errorf("expected test-skill in resolved skills, got: %+v", result)
+	}
+}
+
+func TestProfileValidateCommand(t *testing.T) {
+	home, _, _ := setupProfileTest(t, "my-profile",
+		`name = "my-profile"
+description = "A test profile"
+
+[links]
+test-skill = { skill = "test-skill" }
+`)
+
+	stdout, stderr, err := runCmd(t, home, "profile", "validate", "my-profile")
+	if err != nil {
+		t.Fatalf("profile validate failed: %v, stderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "valid") {
+		t.Errorf("expected 'valid' in output, got: %q", stdout)
+	}
+
+	stdout, stderr, err = runCmd(t, home, "profile", "validate", "my-profile", "--json")
+	if err != nil {
+		t.Fatalf("profile validate --json failed: %v, stderr: %s", err, stderr)
+	}
+	var resp struct {
+		Valid  bool `json:"valid"`
+		Issues []any `json:"issues"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse JSON: %v, raw: %q", err, stdout)
+	}
+	if !resp.Valid {
+		t.Errorf("expected valid=true, got: %+v", resp)
+	}
+}
+
+func TestRenderProfileCommand(t *testing.T) {
+	home, _, _ := setupProfileTest(t, "my-profile",
+		`name = "my-profile"
+description = "A test profile"
+
+[links]
+test-skill = { skill = "test-skill" }
+`)
+
+	stdout, stderr, err := runCmd(t, home, "render", "--profile", "my-profile")
+	if err != nil {
+		t.Fatalf("render --profile failed: %v, stderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "test-skill") {
+		t.Errorf("expected test-skill in render output, got: %q", stdout)
+	}
+
+	stdout, stderr, err = runCmd(t, home, "render", "--profile", "my-profile", "--json")
+	if err != nil {
+		t.Fatalf("render --profile --json failed: %v, stderr: %s", err, stderr)
+	}
+	var results []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &results); err != nil {
+		t.Fatalf("parse JSON: %v, raw: %q", err, stdout)
+	}
+	if len(results) == 0 || results[0].Name != "test-skill" {
+		t.Errorf("expected test-skill in render results, got: %+v", results)
+	}
+
+	_, _, err = runCmd(t, home, "render", "--profile", "my-profile", "/some/dir")
+	if err == nil {
+		t.Fatal("expected render --profile with positional arg to fail")
+	}
+}
+
+func TestInstallProfileCommand(t *testing.T) {
+	home, _, _ := setupProfileTest(t, "my-profile",
+		`name = "my-profile"
+description = "A test profile"
+
+[links]
+test-skill = { skill = "test-skill" }
+`)
+
+	stdout, stderr, err := runCmd(t, home, "install", "--profile", "my-profile", "--dry-run")
+	if err != nil {
+		t.Fatalf("install --profile --dry-run failed: %v, stderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "planned") {
+		t.Errorf("expected 'planned' in dry-run output, got: %q", stdout)
+	}
+
+	stdout, stderr, err = runCmd(t, home, "install", "--profile", "my-profile", "--dry-run", "--json")
+	if err != nil {
+		t.Fatalf("install --profile --dry-run --json failed: %v, stderr: %s", err, stderr)
+	}
+	var results []struct {
+		Action string `json:"action"`
+		Name   string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &results); err != nil {
+		t.Fatalf("parse JSON: %v, raw: %q", err, stdout)
+	}
+	if len(results) == 0 || results[0].Name != "test-skill" {
+		t.Errorf("expected test-skill in install results, got: %+v", results)
+	}
+
+	_, _, err = runCmd(t, home, "install", "--profile", "my-profile", "/some/dir")
+	if err == nil {
+		t.Fatal("expected install --profile with positional arg to fail")
+	}
+}
+
+func TestRenderProfileMissingProfile(t *testing.T) {
+	home, _, _ := setupProfileTest(t, "existing",
+		`name = "existing"
+description = "Exists"
+[links]
+test-skill = { skill = "test-skill" }
+`)
+
+	stdout, _, err := runCmd(t, home, "render", "--profile", "nonexistent")
+	if err != nil {
+		t.Fatalf("render --profile nonexistent should succeed (empty profile), got: %v", err)
+	}
+	if !strings.Contains(stdout, "No skills in profile") {
+		t.Errorf("expected 'No skills in profile', got: %q", stdout)
+	}
+}
+
+func TestRenderProfileInvalidName(t *testing.T) {
+	home, _, _ := setupProfileTest(t, "existing",
+		`name = "existing"
+description = "Exists"
+[links]
+test-skill = { skill = "test-skill" }
+`)
+
+	_, stderr, err := runCmd(t, home, "render", "--profile", "INVALID NAME")
+	if err == nil {
+		t.Fatal("expected render --profile with invalid name to fail")
+	}
+	if !strings.Contains(stderr, "invalid profile name") && !strings.Contains(err.Error(), "invalid profile name") {
+		t.Errorf("expected 'invalid profile name' in error, got stderr: %q err: %v", stderr, err)
+	}
+}
+
+func TestRenderProfileMissingSkill(t *testing.T) {
+	home, _, _ := setupProfileTest(t, "broken",
+		`name = "broken"
+description = "Profile with missing skill"
+[links]
+nonexistent = { skill = "nonexistent-skill" }
+`)
+
+	_, stderr, err := runCmd(t, home, "render", "--profile", "broken")
+	if err == nil {
+		t.Fatal("expected render --profile with missing skill to fail")
+	}
+	if !strings.Contains(stderr, "nonexistent-skill") && !strings.Contains(err.Error(), "nonexistent-skill") {
+		t.Errorf("expected nonexistent-skill in error, got stderr: %q err: %v", stderr, err)
+	}
+}
+
+func TestInstallProfileEmptyResolved(t *testing.T) {
+	home, _, _ := setupProfileTest(t, "existing",
+		`name = "existing"
+description = "Exists"
+[links]
+test-skill = { skill = "test-skill" }
+`)
+
+	stdout, _, err := runCmd(t, home, "install", "--profile", "nonexistent", "--dry-run")
+	if err != nil {
+		t.Fatalf("install --profile nonexistent should succeed (empty profile), got: %v", err)
+	}
+	if !strings.Contains(stdout, "No skills in profile") {
+		t.Errorf("expected 'No skills in profile', got: %q", stdout)
+	}
+}
+
+func TestProfileValidateInvalidProfile(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	profilesDir := filepath.Join(home, ".config", "symskills", "profiles")
+	if err := os.MkdirAll(profilesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profilesDir, "broken.toml"), []byte(`name = "broken"
+description = "Missing skill"
+[links]
+nonexistent = { skill = "nonexistent-skill" }
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, err := runCmd(t, home, "profile", "validate", "broken")
+	if err == nil {
+		t.Fatal("expected profile validate to fail on profile with missing skill")
+	}
+	if !strings.Contains(stdout, "nonexistent-skill") && !strings.Contains(stderr, "nonexistent-skill") {
+		t.Errorf("expected nonexistent-skill in output, got stdout: %q stderr: %q", stdout, stderr)
+	}
+}
+
 func writeTestSkill(t *testing.T, dir, name, description string) {
 	t.Helper()
 	data := "---\nname: " + name + "\ndescription: " + description + "\n---\n\n# Body\n"
