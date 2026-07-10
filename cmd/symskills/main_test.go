@@ -606,7 +606,7 @@ test-skill = { skill = "test-skill" }
 		t.Fatalf("profile validate --json failed: %v, stderr: %s", err, stderr)
 	}
 	var resp struct {
-		Valid  bool `json:"valid"`
+		Valid  bool  `json:"valid"`
 		Issues []any `json:"issues"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
