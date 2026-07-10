@@ -9,9 +9,10 @@ import (
 )
 
 type Config struct {
-	LibraryDir string `json:"library_dir" toml:"library_dir"`
-	RenderDir  string `json:"render_dir" toml:"render_dir"`
-	CacheDir   string `json:"cache_dir" toml:"cache_dir"`
+	LibraryDir  string `json:"library_dir" toml:"library_dir"`
+	RenderDir   string `json:"render_dir" toml:"render_dir"`
+	CacheDir    string `json:"cache_dir" toml:"cache_dir"`
+	ProfilesDir string `json:"profiles_dir" toml:"profiles_dir"`
 }
 
 func Defaults() *Config {
@@ -20,9 +21,10 @@ func Defaults() *Config {
 		home = "."
 	}
 	return &Config{
-		LibraryDir: filepath.Join(home, ".local", "share", "symskills", "library"),
-		RenderDir:  filepath.Join(home, ".local", "share", "symskills", "rendered"),
-		CacheDir:   filepath.Join(home, ".cache", "symskills"),
+		LibraryDir:  filepath.Join(home, ".local", "share", "symskills", "library"),
+		RenderDir:   filepath.Join(home, ".local", "share", "symskills", "rendered"),
+		CacheDir:    filepath.Join(home, ".cache", "symskills"),
+		ProfilesDir: filepath.Join(home, ".config", "symskills", "profiles"),
 	}
 }
 
@@ -35,7 +37,10 @@ func ConfigPath() string {
 }
 
 func EnsureDirs(cfg *Config) error {
-	for _, dir := range []string{filepath.Dir(ConfigPath()), cfg.LibraryDir, cfg.RenderDir, cfg.CacheDir} {
+	for _, dir := range []string{filepath.Dir(ConfigPath()), cfg.LibraryDir, cfg.RenderDir, cfg.CacheDir, cfg.ProfilesDir} {
+		if dir == "" {
+			continue
+		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}

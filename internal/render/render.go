@@ -25,16 +25,24 @@ const (
 
 var DefaultTargets = []Target{TargetOpenCode, TargetClaude, TargetCodex, TargetHermes}
 
+// RenderMeta carries optional provenance metadata for profile-aware rendering.
+type RenderMeta struct {
+	Source  string
+	Profile string
+}
+
 type Rendered struct {
 	Target      Target            `json:"target"`
 	Name        string            `json:"name"`
 	Path        string            `json:"path,omitempty"`
 	Frontmatter skill.Frontmatter `json:"frontmatter"`
 	SkillMD     string            `json:"skill_md,omitempty"`
+	Source      string            `json:"source,omitempty"`
+	Profile     string            `json:"profile,omitempty"`
 }
 
 // RenderTarget returns a target-specific SKILL.md without writing files.
-func RenderTarget(bundle *skill.Bundle, target Target) (Rendered, error) {
+func RenderTarget(bundle *skill.Bundle, target Target, meta ...RenderMeta) (Rendered, error) {
 	if bundle == nil {
 		return Rendered{}, fmt.Errorf("bundle is nil")
 	}
@@ -79,7 +87,12 @@ func RenderTarget(bundle *skill.Bundle, target Target) (Rendered, error) {
 	if err != nil {
 		return Rendered{}, err
 	}
-	return Rendered{Target: target, Name: fm.Name, Frontmatter: fm, SkillMD: skillMD}, nil
+	item := Rendered{Target: target, Name: fm.Name, Frontmatter: fm, SkillMD: skillMD}
+	if len(meta) > 0 {
+		item.Source = meta[0].Source
+		item.Profile = meta[0].Profile
+	}
+	return item, nil
 }
 
 func renderBody(bundle *skill.Bundle, target Target, cfg skill.TargetConfig) (string, error) {
@@ -161,14 +174,14 @@ func encodeSkillMD(fm skill.Frontmatter, body string) (string, error) {
 
 // RenderAll writes target-specific skill folders under outDir and returns the
 // successfully rendered items along with any per-target errors.
-func RenderAll(bundle *skill.Bundle, outDir string, targets []Target) ([]Rendered, []error) {
+func RenderAll(bundle *skill.Bundle, outDir string, targets []Target, meta ...RenderMeta) ([]Rendered, []error) {
 	if len(targets) == 0 {
 		targets = DefaultTargets
 	}
 	var rendered []Rendered
 	var errs []error
 	for _, target := range targets {
-		item, err := RenderTarget(bundle, target)
+		item, err := RenderTarget(bundle, target, meta...)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("target %s: %w", target, err))
 			continue

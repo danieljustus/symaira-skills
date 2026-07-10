@@ -19,12 +19,16 @@ func TestDefaults(t *testing.T) {
 	if cfg.CacheDir == "" {
 		t.Error("CacheDir should not be empty")
 	}
+	if cfg.ProfilesDir == "" {
+		t.Error("ProfilesDir should not be empty")
+	}
 
 	// Verify paths contain expected components
 	home, _ := os.UserHomeDir()
 	expectedLib := filepath.Join(home, ".local", "share", "symskills", "library")
 	expectedRender := filepath.Join(home, ".local", "share", "symskills", "rendered")
 	expectedCache := filepath.Join(home, ".cache", "symskills")
+	expectedProfiles := filepath.Join(home, ".config", "symskills", "profiles")
 
 	if cfg.LibraryDir != expectedLib {
 		t.Errorf("LibraryDir = %q, want %q", cfg.LibraryDir, expectedLib)
@@ -34,6 +38,9 @@ func TestDefaults(t *testing.T) {
 	}
 	if cfg.CacheDir != expectedCache {
 		t.Errorf("CacheDir = %q, want %q", cfg.CacheDir, expectedCache)
+	}
+	if cfg.ProfilesDir != expectedProfiles {
+		t.Errorf("ProfilesDir = %q, want %q", cfg.ProfilesDir, expectedProfiles)
 	}
 }
 
@@ -68,9 +75,10 @@ func TestEnsureDirs(t *testing.T) {
 	defer os.Setenv("HOME", origHome)
 
 	cfg := &Config{
-		LibraryDir: filepath.Join(tmpDir, "library"),
-		RenderDir:  filepath.Join(tmpDir, "rendered"),
-		CacheDir:   filepath.Join(tmpDir, "cache"),
+		LibraryDir:  filepath.Join(tmpDir, "library"),
+		RenderDir:   filepath.Join(tmpDir, "rendered"),
+		CacheDir:    filepath.Join(tmpDir, "cache"),
+		ProfilesDir: filepath.Join(tmpDir, "profiles"),
 	}
 
 	// Ensure directories
@@ -85,6 +93,7 @@ func TestEnsureDirs(t *testing.T) {
 		cfg.LibraryDir,
 		cfg.RenderDir,
 		cfg.CacheDir,
+		cfg.ProfilesDir,
 	}
 
 	for _, dir := range dirs {
@@ -104,9 +113,10 @@ func TestEnsureDirsPermissions(t *testing.T) {
 	defer os.Setenv("HOME", origHome)
 
 	cfg := &Config{
-		LibraryDir: filepath.Join(tmpDir, "library"),
-		RenderDir:  filepath.Join(tmpDir, "rendered"),
-		CacheDir:   filepath.Join(tmpDir, "cache"),
+		LibraryDir:  filepath.Join(tmpDir, "library"),
+		RenderDir:   filepath.Join(tmpDir, "rendered"),
+		CacheDir:    filepath.Join(tmpDir, "cache"),
+		ProfilesDir: filepath.Join(tmpDir, "profiles"),
 	}
 
 	// Ensure directories
@@ -121,6 +131,7 @@ func TestEnsureDirsPermissions(t *testing.T) {
 		cfg.LibraryDir,
 		cfg.RenderDir,
 		cfg.CacheDir,
+		cfg.ProfilesDir,
 	}
 
 	for _, dir := range dirs {
@@ -168,6 +179,9 @@ func TestLoad(t *testing.T) {
 	if loaded.CacheDir != defaults.CacheDir {
 		t.Errorf("CacheDir = %q, want %q", loaded.CacheDir, defaults.CacheDir)
 	}
+	if loaded.ProfilesDir != defaults.ProfilesDir {
+		t.Errorf("ProfilesDir = %q, want %q", loaded.ProfilesDir, defaults.ProfilesDir)
+	}
 }
 
 func TestLoadWithCustomConfig(t *testing.T) {
@@ -191,6 +205,7 @@ func TestLoadWithCustomConfig(t *testing.T) {
 	customContent := `library_dir = "/custom/library"
 render_dir = "/custom/rendered"
 cache_dir = "/custom/cache"
+profiles_dir = "/custom/profiles"
 `
 	err = os.WriteFile(configPath, []byte(customContent), 0644)
 	if err != nil {
@@ -212,6 +227,9 @@ cache_dir = "/custom/cache"
 	}
 	if loaded.CacheDir != "/custom/cache" {
 		t.Errorf("CacheDir = %q, want %q", loaded.CacheDir, "/custom/cache")
+	}
+	if loaded.ProfilesDir != "/custom/profiles" {
+		t.Errorf("ProfilesDir = %q, want %q", loaded.ProfilesDir, "/custom/profiles")
 	}
 }
 
@@ -257,5 +275,8 @@ func TestLoadWithPartialConfig(t *testing.T) {
 	}
 	if loaded.CacheDir != defaults.CacheDir {
 		t.Errorf("CacheDir = %q, want %q (should use default)", loaded.CacheDir, defaults.CacheDir)
+	}
+	if loaded.ProfilesDir != defaults.ProfilesDir {
+		t.Errorf("ProfilesDir = %q, want %q (should use default)", loaded.ProfilesDir, defaults.ProfilesDir)
 	}
 }
