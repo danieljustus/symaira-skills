@@ -143,3 +143,96 @@ func TestValidateNilProfile(t *testing.T) {
 		t.Fatalf("want profile_required issue, got %v", issues)
 	}
 }
+
+func TestListProfiles(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	globalDir := filepath.Join(tmpDir, "global")
+	projectDir := filepath.Join(tmpDir, "project")
+
+	// Create global profile
+	globalProfilePath := filepath.Join(globalDir, "global-profile.toml")
+	writeFile(t, globalProfilePath, `name = "global-profile"
+description = "Global profile description"
+`)
+
+	// Create overridden profile in global
+	overriddenProfilePathGlobal := filepath.Join(globalDir, "common-profile.toml")
+	writeFile(t, overriddenProfilePathGlobal, `name = "common-profile"
+description = "Common global description"
+`)
+
+	// Create project profile
+	projectProfilesDir := filepath.Join(projectDir, ".symskills", "profiles")
+	projectProfilePath := filepath.Join(projectProfilesDir, "project-profile.toml")
+	writeFile(t, projectProfilePath, `name = "project-profile"
+description = "Project profile description"
+`)
+
+	// Create overridden profile in project (deduplication check)
+	overriddenProfilePathProject := filepath.Join(projectProfilesDir, "common-profile.toml")
+	writeFile(t, overriddenProfilePathProject, `name = "common-profile"
+description = "Common project description"
+`)
+
+	refs, err := List(globalDir, projectDir)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	// Expected list size should be 3: "common-profile", "project-profile", "global-profile"
+	// Deduplication: common-profile from project should win because projectDir has higher precedence
+	if len(refs) != 3 {
+		t.Fatalf("expected 3 refs, got %d: %+v", len(refs), refs)
+	}
+
+	var foundCommon, foundProject, foundGlobal bool
+	for _, ref := range refs {
+		switch ref.Name {
+		case "common-profile":
+			foundCommon = true
+			if ref.Source != "project" {
+				t.Errorf("common-profile source: want project, got %q", ref.Source)
+			}
+			if ref.Description != "Common project description" {
+				t.Errorf("common-profile description: want 'Common project description', got %q", ref.Description)
+			}
+		case "project-profile":
+			foundProject = true
+			if ref.Source != "project" {
+				t.Errorf("project-profile source: want project, got %q", ref.Source)
+			}
+		case "global-profile":
+			foundGlobal = true
+			if ref.Source != "global" {
+				t.Errorf("global-profile source: want global, got %q", ref.Source)
+			}
+		default:
+			t.Errorf("unexpected profile name: %q", ref.Name)
+		}
+	}
+
+	if !foundCommon {
+		t.Error("common-profile not found")
+	}
+	if !foundProject {
+		t.Error("project-profile not found")
+	}
+	if !foundGlobal {
+		t.Error("global-profile not found")
+	}
+}
+
+func TestListProfilesError(t *testing.T) {
+	tmpDir := t.TempDir()
+	globalDir := filepath.Join(tmpDir, "global")
+
+	// Invalid TOML file
+	invalidPath := filepath.Join(globalDir, "invalid.toml")
+	writeFile(t, invalidPath, `[invalid`)
+
+	_, err := List(globalDir, "")
+	if err == nil {
+		t.Fatal("expected error when loading invalid profile")
+	}
+}
