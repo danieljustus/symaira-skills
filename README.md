@@ -85,6 +85,30 @@ workflow = "github"
 audience = "maintainers"
 ```
 
+## Profiles
+
+Context profiles are named collections of skill links with optional inheritance. Profiles are resolved across multiple search locations with deterministic precedence:
+1. **Project**: `.symskills/profiles/` directory under the current project root.
+2. **Parent**: `.symskills/profiles/` directory in parent directories of the current project (closer parents override farther parents, e.g. `parent:1` is the immediate parent).
+3. **Global**: Configured global profiles directory (defaults to `~/.config/symskills/profiles`).
+
+### Profile Format
+
+Profiles are defined as TOML files:
+
+```toml
+name = "developer-env"
+description = "A standard development environment profile"
+inherits = ["base-profile"] # optional inheritance
+
+[links.sync]
+skill = "00-sync"
+
+[links.code-review]
+skill = "01-code-review"
+alias = "review" # optional target-specific alias
+```
+
 ## Commands
 
 | Command | Purpose |
@@ -94,10 +118,13 @@ audience = "maintainers"
 | `list` | List managed skills |
 | `inspect <skill-dir>` | Show parsed SKILL.md + symskills metadata |
 | `validate <skill-dir>` | Validate portable skill metadata and references |
-| `render <skill-dir>` | Render target-specific skill folders |
+| `render [skill-dir]` | Render target-specific skill folders (or use `--profile <name>`) |
 | `diff <skill-dir>` | Compare rendered output with installed target |
-| `install <skill-dir>` | Render and install a target-specific skill |
+| `install [skill-dir]` | Render and install a target-specific skill (or use `--profile <name>`) |
 | `uninstall <name>` | Remove a managed installed skill |
+| `profile list` | List available context profiles |
+| `profile resolve <profile-name>` | Resolve a profile and print its merged skill set |
+| `profile validate <profile-name>` | Validate a profile's structure and link targets |
 | `doctor` | Print config, library, render, and target paths |
 | `serve --stdio` | Serve MCP tools over stdio |
 
@@ -125,6 +152,8 @@ Exposes:
 - `skills_list`
 - `skills_inspect`
 - `skills_validate`
+- `skills_profile_list`
+- `skills_profile_resolve`
 - `skills_render_plan`
 - `skills_install`
 
