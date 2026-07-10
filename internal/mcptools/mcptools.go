@@ -83,7 +83,7 @@ func Register(srv *mcpserver.Server, opts Options) {
 		Description: "List available context profiles (global and project).",
 		InputSchema: json.RawMessage(emptyObject),
 		Handler: func(_ context.Context, _ json.RawMessage) (any, error) {
-			refs, err := profile.List(cfg.ProfilesDir, opts.ProjectDir)
+			refs, err := profile.List(opts.ProfilesDir, opts.ProjectDir)
 			if err != nil {
 				return nil, exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "list profiles")
 			}
@@ -101,7 +101,7 @@ func Register(srv *mcpserver.Server, opts Options) {
 			if err := json.Unmarshal(in, &args); err != nil {
 				return nil, exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "parse arguments")
 			}
-			resolved, issues, err := profile.Resolve(opts.LibraryDir, cfg.ProfilesDir, opts.ProjectDir, args.Name)
+			resolved, issues, err := profile.Resolve(opts.LibraryDir, opts.ProfilesDir, opts.ProjectDir, args.Name)
 			if err != nil {
 				return nil, exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
 			}
