@@ -19,6 +19,7 @@ import (
 	"github.com/danieljustus/symaira-skills/internal/config"
 	"github.com/danieljustus/symaira-skills/internal/install"
 	"github.com/danieljustus/symaira-skills/internal/mcptools"
+	"github.com/danieljustus/symaira-skills/internal/profile"
 	"github.com/danieljustus/symaira-skills/internal/render"
 	"github.com/danieljustus/symaira-skills/internal/skill"
 )
@@ -51,6 +52,7 @@ func newRootCmd(version string) *cobra.Command {
 		newDiffCmd(),
 		newInstallCmd(),
 		newUninstallCmd(),
+		newProfileCmd(),
 		newDoctorCmd(),
 		newServeCmd(version),
 		newVersionCmd(version),
@@ -229,12 +231,12 @@ func newValidateCmd() *cobra.Command {
 }
 
 func newRenderCmd() *cobra.Command {
-	var targetName, output string
+	var targetName, output, profileName string
 	var jsonOut bool
 	cmd := &cobra.Command{
-		Use:   "render <skill-dir>",
-		Short: "Render a skill for supported harness targets",
-		Args:  cobra.ExactArgs(1),
+		Use:   "render [skill-dir]",
+		Short: "Render a skill or profile for supported harness targets",
+		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -247,6 +249,15 @@ func newRenderCmd() *cobra.Command {
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "parse target")
 			}
+			if profileName != "" {
+				if len(args) > 0 {
+					return exitcodes.Wrap(fmt.Errorf("skill-dir is not used with --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "render profile")
+				}
+				return renderProfile(cmd, cfg, output, targets, profileName, jsonOut)
+			}
+			if len(args) != 1 {
+				return exitcodes.Wrap(fmt.Errorf("skill-dir is required without --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "render skill")
+			}
 			bundle, err := skill.LoadBundle(args[0])
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "load skill")
@@ -255,19 +266,64 @@ func newRenderCmd() *cobra.Command {
 			if len(errs) > 0 {
 				return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render skill")
 			}
-			if jsonOut {
-				return printJSON(cmd, results)
-			}
-			for _, result := range results {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", result.Target, result.Path)
-			}
-			return nil
+			return printRenderResults(cmd, results, jsonOut)
 		},
 	}
 	cmd.Flags().StringVar(&targetName, "target", "all", "Target harness: all, opencode, claude, codex, hermes")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Render output directory")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
+	cmd.Flags().StringVar(&profileName, "profile", "", "Render all skills from a context profile")
 	return cmd
+}
+
+func printRenderResults(cmd *cobra.Command, results []render.Rendered, jsonOut bool) error {
+	if jsonOut {
+		return printJSON(cmd, results)
+	}
+	for _, result := range results {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", result.Target, result.Name, result.Source, result.Path)
+	}
+	return nil
+}
+
+func renderProfile(cmd *cobra.Command, cfg *config.Config, output string, targets []render.Target, profileName string, jsonOut bool) error {
+	resolved, issues, err := profile.Resolve(cfg.LibraryDir, cfg.ProfilesDir, ".", profileName)
+	if err != nil {
+		return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
+	}
+	if len(issues) > 0 {
+		for _, issue := range issues {
+			fmt.Fprintf(cmd.ErrOrStderr(), "%s\t%s\t%s\n", issue.Severity, issue.Code, issue.Message)
+		}
+		return exitcodes.Wrap(fmt.Errorf("profile has unresolved issues"), exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
+	}
+	if len(resolved) == 0 {
+		if jsonOut {
+			return printJSON(cmd, []render.Rendered{})
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "No skills in profile")
+		return nil
+	}
+
+	var results []render.Rendered
+	var errs []error
+	for _, rs := range resolved {
+		bundle, err := skill.LoadBundle(filepath.Join(cfg.LibraryDir, rs.Skill))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("profile link %q: %w", rs.Name, err))
+			continue
+		}
+		rendered, renderErrs := render.RenderAll(bundle, output, targets, render.RenderMeta{Source: rs.Source, Profile: rs.Profile})
+		if len(renderErrs) > 0 {
+			errs = append(errs, renderErrs...)
+			continue
+		}
+		results = append(results, rendered...)
+	}
+	if len(errs) > 0 {
+		return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render profile")
+	}
+	return printRenderResults(cmd, results, jsonOut)
 }
 
 func newDiffCmd() *cobra.Command {
@@ -324,12 +380,12 @@ func newDiffCmd() *cobra.Command {
 }
 
 func newInstallCmd() *cobra.Command {
-	var targetName, output, scopeName, modeName string
+	var targetName, output, scopeName, modeName, profileName string
 	var jsonOut, dryRun bool
 	cmd := &cobra.Command{
-		Use:   "install <skill-dir>",
-		Short: "Render and install a skill into a supported harness",
-		Args:  cobra.ExactArgs(1),
+		Use:   "install [skill-dir]",
+		Short: "Render and install a skill or profile into a supported harness",
+		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target, err := render.ParseTarget(targetName)
 			if err != nil {
@@ -342,6 +398,16 @@ func newInstallCmd() *cobra.Command {
 			if output == "" {
 				output = cfg.RenderDir
 			}
+			opts := install.Options{Scope: install.Scope(scopeName), Mode: install.Mode(modeName), DryRun: dryRun}
+			if profileName != "" {
+				if len(args) > 0 {
+					return exitcodes.Wrap(fmt.Errorf("skill-dir is not used with --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "install profile")
+				}
+				return installProfile(cmd, cfg, output, target, profileName, opts, jsonOut)
+			}
+			if len(args) != 1 {
+				return exitcodes.Wrap(fmt.Errorf("skill-dir is required without --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "install skill")
+			}
 			bundle, err := skill.LoadBundle(args[0])
 			if err != nil {
 				return err
@@ -353,7 +419,6 @@ func newInstallCmd() *cobra.Command {
 				}
 				return exitcodes.Wrap(fmt.Errorf("target %s produced no render output", target), exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
 			}
-			opts := install.Options{Scope: install.Scope(scopeName), Mode: install.Mode(modeName), DryRun: dryRun}
 			result, err := install.Install(install.RenderedSkill{Target: target, Name: rendered[0].Name, Path: rendered[0].Path}, opts)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "install skill")
@@ -371,7 +436,63 @@ func newInstallCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Render output directory")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Plan install without writing")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
+	cmd.Flags().StringVar(&profileName, "profile", "", "Install all skills from a context profile")
 	return cmd
+}
+
+func installProfile(cmd *cobra.Command, cfg *config.Config, output string, target render.Target, profileName string, opts install.Options, jsonOut bool) error {
+	resolved, issues, err := profile.Resolve(cfg.LibraryDir, cfg.ProfilesDir, ".", profileName)
+	if err != nil {
+		return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
+	}
+	if len(issues) > 0 {
+		for _, issue := range issues {
+			fmt.Fprintf(cmd.ErrOrStderr(), "%s\t%s\t%s\n", issue.Severity, issue.Code, issue.Message)
+		}
+		return exitcodes.Wrap(fmt.Errorf("profile has unresolved issues"), exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
+	}
+	if len(resolved) == 0 {
+		if jsonOut {
+			return printJSON(cmd, []install.Result{})
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "No skills in profile")
+		return nil
+	}
+
+	var results []install.Result
+	var errs []error
+	for _, rs := range resolved {
+		bundle, err := skill.LoadBundle(filepath.Join(cfg.LibraryDir, rs.Skill))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("profile link %q: %w", rs.Name, err))
+			continue
+		}
+		rendered, renderErrs := render.RenderAll(bundle, output, []render.Target{target}, render.RenderMeta{Source: rs.Source, Profile: rs.Profile})
+		if len(renderErrs) > 0 {
+			errs = append(errs, renderErrs...)
+			continue
+		}
+		if len(rendered) == 0 {
+			errs = append(errs, fmt.Errorf("profile link %q: target %s produced no render output", rs.Name, target))
+			continue
+		}
+		result, err := install.Install(install.RenderedSkill{Target: target, Name: rendered[0].Name, Path: rendered[0].Path}, opts)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("profile link %q: %w", rs.Name, err))
+			continue
+		}
+		results = append(results, result)
+	}
+	if len(errs) > 0 {
+		return exitcodes.Wrap(errs[0], exitcodes.ExitConflict, exitcodes.KindConflict, "install profile")
+	}
+	if jsonOut {
+		return printJSON(cmd, results)
+	}
+	for _, result := range results {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s %s at %s\n", result.Action, result.Name, result.Path)
+	}
+	return nil
 }
 
 func newUninstallCmd() *cobra.Command {
@@ -397,6 +518,114 @@ func newUninstallCmd() *cobra.Command {
 	return cmd
 }
 
+func newProfileCmd() *cobra.Command {
+	profileCmd := &cobra.Command{
+		Use:   "profile",
+		Short: "Manage inherited context profiles for skill discovery",
+	}
+	profileCmd.AddCommand(
+		newProfileListCmd(),
+		newProfileResolveCmd(),
+		newProfileValidateCmd(),
+	)
+	return profileCmd
+}
+
+func newProfileListCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List available context profiles",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			refs, err := profile.List(cfg.ProfilesDir, ".")
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "list profiles")
+			}
+			if jsonOut {
+				return printJSON(cmd, refs)
+			}
+			for _, ref := range refs {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", ref.Name, ref.Source, ref.Path)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
+	return cmd
+}
+
+func newProfileResolveCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "resolve <profile-name>",
+		Short: "Resolve a profile and print its merged skill set",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			resolved, issues, err := profile.Resolve(cfg.LibraryDir, cfg.ProfilesDir, ".", args[0])
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
+			}
+			if len(issues) > 0 {
+				for _, issue := range issues {
+					fmt.Fprintf(cmd.ErrOrStderr(), "%s\t%s\t%s\n", issue.Severity, issue.Code, issue.Message)
+				}
+			}
+			if jsonOut {
+				return printJSON(cmd, map[string]any{"skills": resolved, "issues": issues})
+			}
+			for _, rs := range resolved {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", rs.Name, rs.Skill, rs.Source, rs.Profile)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
+	return cmd
+}
+
+func newProfileValidateCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "validate <profile-name>",
+		Short: "Validate a profile's structure and link targets",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			resolved, issues, err := profile.Resolve(cfg.LibraryDir, cfg.ProfilesDir, ".", args[0])
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "validate profile")
+			}
+			allIssues := append([]skill.Issue{}, issues...)
+			_ = resolved
+			result := map[string]any{"valid": len(allIssues) == 0, "issues": allIssues}
+			if jsonOut {
+				return printJSON(cmd, result)
+			}
+			if len(allIssues) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "valid")
+				return nil
+			}
+			for _, issue := range allIssues {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", issue.Severity, issue.Code, issue.Message)
+			}
+			return exitcodes.Wrap(fmt.Errorf("validation failed"), exitcodes.ExitData, exitcodes.KindValidation, "validate profile")
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
+	return cmd
+}
+
 func newDoctorCmd() *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
@@ -416,11 +645,17 @@ func newDoctorCmd() *cobra.Command {
 				path, _ := install.InstallPath(target, "<name>", install.Options{Scope: install.ScopeUser})
 				paths = append(paths, targetPath{Target: target, User: path})
 			}
-			result := map[string]any{"config_path": config.ConfigPath(), "config": cfg, "targets": paths}
+			result := map[string]any{
+				"config_path":  config.ConfigPath(),
+				"config":       cfg,
+				"targets":      paths,
+				"profiles_dir": cfg.ProfilesDir,
+				"project_dir":  ".",
+			}
 			if jsonOut {
 				return printJSON(cmd, result)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "config: %s\nlibrary: %s\nrendered: %s\n", config.ConfigPath(), cfg.LibraryDir, cfg.RenderDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "config: %s\nlibrary: %s\nrendered: %s\nprofiles: %s\n", config.ConfigPath(), cfg.LibraryDir, cfg.RenderDir, cfg.ProfilesDir)
 			for _, p := range paths {
 				fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", p.Target, p.User)
 			}
@@ -444,7 +679,7 @@ func newServeCmd(version string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return mcptools.Serve(version, mcptools.Options{LibraryDir: cfg.LibraryDir, RenderDir: cfg.RenderDir})
+			return mcptools.Serve(version, mcptools.Options{LibraryDir: cfg.LibraryDir, RenderDir: cfg.RenderDir, ProfilesDir: cfg.ProfilesDir})
 		},
 	}
 	cmd.Flags().BoolVar(&stdio, "stdio", false, "Serve over stdio")

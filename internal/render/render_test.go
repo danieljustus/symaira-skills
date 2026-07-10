@@ -1,6 +1,7 @@
 package render
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -261,4 +262,77 @@ func TestParseTarget(t *testing.T) {
 			t.Fatalf("expected error parsing invalid target %q, but got nil", s)
 		}
 	}
+}
+
+func TestRenderTargetCarriesProvenanceMetadata(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: meta-test
+description: Meta test.
+---
+
+Body.
+`)
+	bundle, err := skill.LoadBundle(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rendered, err := RenderTarget(bundle, TargetOpenCode, RenderMeta{Source: "project", Profile: "default"})
+	if err != nil {
+		t.Fatalf("RenderTarget: %v", err)
+	}
+	if rendered.Source != "project" {
+		t.Fatalf("source: want project, got %q", rendered.Source)
+	}
+	if rendered.Profile != "default" {
+		t.Fatalf("profile: want default, got %q", rendered.Profile)
+	}
+
+	var decoded Rendered
+	if err := jsonRoundTrip(rendered, &decoded); err != nil {
+		t.Fatalf("JSON round-trip: %v", err)
+	}
+	if decoded.Source != "project" || decoded.Profile != "default" {
+		t.Fatalf("JSON decoded metadata mismatch: %+v", decoded)
+	}
+}
+
+func TestRenderTargetWithoutMetaOmitsProvenanceFields(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: no-meta
+description: No meta.
+---
+
+Body.
+`)
+	bundle, err := skill.LoadBundle(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rendered, err := RenderTarget(bundle, TargetOpenCode)
+	if err != nil {
+		t.Fatalf("RenderTarget: %v", err)
+	}
+	if rendered.Source != "" || rendered.Profile != "" {
+		t.Fatalf("expected empty source/profile, got %+v", rendered)
+	}
+
+	var decoded Rendered
+	if err := jsonRoundTrip(rendered, &decoded); err != nil {
+		t.Fatalf("JSON round-trip: %v", err)
+	}
+	if decoded.Source != "" || decoded.Profile != "" {
+		t.Fatalf("JSON decoded metadata should be empty, got %+v", decoded)
+	}
+}
+
+func jsonRoundTrip(in, out any) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
 }
