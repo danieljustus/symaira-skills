@@ -280,3 +280,36 @@ func TestLoadWithPartialConfig(t *testing.T) {
 		t.Errorf("ProfilesDir = %q, want %q (should use default)", loaded.ProfilesDir, defaults.ProfilesDir)
 	}
 }
+
+func TestEnsureDirsWithEmptyDir(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	cfg := &Config{
+		LibraryDir:  filepath.Join(tmpDir, "library"),
+		RenderDir:   filepath.Join(tmpDir, "rendered"),
+		CacheDir:    filepath.Join(tmpDir, "cache"),
+		ProfilesDir: "",
+	}
+
+	err := EnsureDirs(cfg)
+	if err != nil {
+		t.Fatalf("EnsureDirs with empty ProfilesDir failed: %v", err)
+	}
+
+	dirs := []string{
+		filepath.Dir(ConfigPath()),
+		cfg.LibraryDir,
+		cfg.RenderDir,
+		cfg.CacheDir,
+	}
+
+	for _, dir := range dirs {
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			t.Errorf("Directory %q was not created", dir)
+		}
+	}
+}
