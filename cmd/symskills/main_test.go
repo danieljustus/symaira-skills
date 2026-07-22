@@ -252,13 +252,22 @@ func TestDiffCommand(t *testing.T) {
 		t.Fatalf("install failed: %v", err)
 	}
 
-	// Diff standard (should show no changes)
+	// Diff standard (should show no changes message)
 	stdout, _, err := runCmd(t, home, "diff", skillDir)
 	if err != nil {
 		t.Fatalf("diff failed: %v", err)
 	}
-	if stdout != "" {
-		t.Errorf("expected empty stdout for no changes, got: %q", stdout)
+	if !strings.Contains(stdout, "No changes detected.") {
+		t.Errorf("expected 'No changes detected.' for no changes, got: %q", stdout)
+	}
+
+	// Diff JSON (should show [])
+	stdout, _, err = runCmd(t, home, "diff", "--json", skillDir)
+	if err != nil {
+		t.Fatalf("diff json failed: %v", err)
+	}
+	if strings.TrimSpace(stdout) != "[]" {
+		t.Errorf("expected '[]' for no changes in json, got: %q", stdout)
 	}
 
 	// Modify skill and diff
@@ -291,6 +300,105 @@ func TestDiffCommand(t *testing.T) {
 	_, _, err = runCmd(t, home, "diff", "--target", "invalid", skillDir)
 	if err == nil {
 		t.Fatal("expected diff to fail on invalid target")
+	}
+}
+
+func TestOmittedSkillDirDefaultsToCwd(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "cwd-skill", "Testing cwd default")
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	if err := os.Chdir(skillDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// inspect without arg inside skill dir
+	stdout, _, err := runCmd(t, home, "inspect")
+	if err != nil {
+		t.Fatalf("inspect without arg failed: %v", err)
+	}
+	if !strings.Contains(stdout, "cwd-skill") {
+		t.Errorf("expected cwd-skill in inspect output, got: %q", stdout)
+	}
+
+	// validate without arg inside skill dir
+	stdout, _, err = runCmd(t, home, "validate")
+	if err != nil {
+		t.Fatalf("validate without arg failed: %v", err)
+	}
+	if !strings.Contains(stdout, "valid") {
+		t.Errorf("expected valid in validate output, got: %q", stdout)
+	}
+
+	// render without arg inside skill dir
+	stdout, _, err = runCmd(t, home, "render")
+	if err != nil {
+		t.Fatalf("render without arg failed: %v", err)
+	}
+	if !strings.Contains(stdout, "cwd-skill") {
+		t.Errorf("expected cwd-skill in render output, got: %q", stdout)
+	}
+
+	// install without arg inside skill dir
+	stdout, _, err = runCmd(t, home, "install", "--mode", "copy")
+	if err != nil {
+		t.Fatalf("install without arg failed: %v", err)
+	}
+	if !strings.Contains(stdout, "installed") {
+		t.Errorf("expected installed in install output, got: %q", stdout)
+	}
+
+	// diff without arg inside skill dir (now installed, should report No changes detected.)
+	stdout, _, err = runCmd(t, home, "diff")
+	if err != nil {
+		t.Fatalf("diff without arg failed: %v", err)
+	}
+	if !strings.Contains(stdout, "No changes detected.") {
+		t.Errorf("expected 'No changes detected.' in diff output, got: %q", stdout)
+	}
+
+	// Switch to an empty dir (not a skill dir)
+	emptyDir := t.TempDir()
+	if err := os.Chdir(emptyDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// inspect without arg outside skill dir should fail
+	_, _, err = runCmd(t, home, "inspect")
+	if err == nil {
+		t.Fatal("expected inspect without arg outside skill dir to fail")
+	}
+
+	// validate without arg outside skill dir should fail
+	_, _, err = runCmd(t, home, "validate")
+	if err == nil {
+		t.Fatal("expected validate without arg outside skill dir to fail")
+	}
+
+	// render without arg outside skill dir should fail
+	_, _, err = runCmd(t, home, "render")
+	if err == nil {
+		t.Fatal("expected render without arg outside skill dir to fail")
+	}
+
+	// install without arg outside skill dir should fail
+	_, _, err = runCmd(t, home, "install")
+	if err == nil {
+		t.Fatal("expected install without arg outside skill dir to fail")
+	}
+
+	// diff without arg outside skill dir should fail
+	_, _, err = runCmd(t, home, "diff")
+	if err == nil {
+		t.Fatal("expected diff without arg outside skill dir to fail")
 	}
 }
 

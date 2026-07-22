@@ -215,68 +215,23 @@ func callInspect(_ context.Context, _ *mcpserver.Server, opts Options, in json.R
 }
 
 func renderProfile(opts Options, cfg *config.Config, targets []render.Target, profileName string) (any, error) {
-	resolved, issues, err := profile.Resolve(opts.LibraryDir, opts.ProfilesDir, opts.ProjectDir, profileName)
+	results, issues, err := profile.RenderProfile(opts.LibraryDir, opts.ProfilesDir, opts.ProjectDir, opts.RenderDir, targets, profileName)
 	if err != nil {
 		return nil, exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
 	}
 	if len(issues) > 0 {
 		return map[string]any{"skills": []render.Rendered{}, "issues": issues}, nil
 	}
-	var results []render.Rendered
-	var errs []error
-	for _, rs := range resolved {
-		bundle, err := skill.LoadBundle(filepath.Join(opts.LibraryDir, rs.Skill))
-		if err != nil {
-			errs = append(errs, fmt.Errorf("profile link %q: %w", rs.Name, err))
-			continue
-		}
-		rendered, renderErrs := render.RenderAll(bundle, opts.RenderDir, targets, render.RenderMeta{Source: rs.Source, Profile: rs.Profile})
-		if len(renderErrs) > 0 {
-			errs = append(errs, renderErrs...)
-			continue
-		}
-		results = append(results, rendered...)
-	}
-	if len(errs) > 0 {
-		return nil, errs[0]
-	}
 	return results, nil
 }
 
 func installProfile(opts Options, cfg *config.Config, target render.Target, profileName string, installOpts install.Options) (any, error) {
-	resolved, issues, err := profile.Resolve(opts.LibraryDir, opts.ProfilesDir, opts.ProjectDir, profileName)
+	results, issues, err := profile.InstallProfile(opts.LibraryDir, opts.ProfilesDir, opts.ProjectDir, opts.RenderDir, target, profileName, installOpts)
 	if err != nil {
 		return nil, exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
 	}
 	if len(issues) > 0 {
 		return map[string]any{"results": []install.Result{}, "issues": issues}, nil
-	}
-	var results []install.Result
-	var errs []error
-	for _, rs := range resolved {
-		bundle, err := skill.LoadBundle(filepath.Join(opts.LibraryDir, rs.Skill))
-		if err != nil {
-			errs = append(errs, fmt.Errorf("profile link %q: %w", rs.Name, err))
-			continue
-		}
-		rendered, renderErrs := render.RenderAll(bundle, opts.RenderDir, []render.Target{target}, render.RenderMeta{Source: rs.Source, Profile: rs.Profile})
-		if len(renderErrs) > 0 {
-			errs = append(errs, renderErrs...)
-			continue
-		}
-		if len(rendered) == 0 {
-			errs = append(errs, fmt.Errorf("profile link %q: target %s produced no render output", rs.Name, target))
-			continue
-		}
-		result, err := install.Install(install.RenderedSkill{Target: target, Name: rendered[0].Name, Path: rendered[0].Path}, installOpts)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("profile link %q: %w", rs.Name, err))
-			continue
-		}
-		results = append(results, result)
-	}
-	if len(errs) > 0 {
-		return nil, errs[0]
 	}
 	return results, nil
 }

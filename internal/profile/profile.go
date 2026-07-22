@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/danieljustus/symaira-skills/internal/install"
+	"github.com/danieljustus/symaira-skills/internal/render"
 	"github.com/danieljustus/symaira-skills/internal/skill"
 )
 
@@ -116,4 +118,67 @@ func List(globalProfilesDir, projectDir string) ([]Ref, error) {
 		}
 	}
 	return refs, nil
+}
+
+// RenderProfile resolves a profile and renders its linked skills for the target harnesses.
+func RenderProfile(libraryDir, profilesDir, projectDir, output string, targets []render.Target, profileName string) ([]render.Rendered, []skill.Issue, error) {
+	resolved, issues, err := Resolve(libraryDir, profilesDir, projectDir, profileName)
+	if err != nil || len(issues) > 0 {
+		return nil, issues, err
+	}
+	var results []render.Rendered
+	var errs []error
+	for _, rs := range resolved {
+		bundle, err := skill.LoadBundle(filepath.Join(libraryDir, rs.Skill))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("profile link %q: %w", rs.Name, err))
+			continue
+		}
+		rendered, renderErrs := render.RenderAll(bundle, output, targets, render.RenderMeta{Source: rs.Source, Profile: rs.Profile})
+		if len(renderErrs) > 0 {
+			errs = append(errs, renderErrs...)
+			continue
+		}
+		results = append(results, rendered...)
+	}
+	if len(errs) > 0 {
+		return nil, nil, errs[0]
+	}
+	return results, nil, nil
+}
+
+// InstallProfile resolves a profile, renders its linked skills, and installs them into the target harness.
+func InstallProfile(libraryDir, profilesDir, projectDir, output string, target render.Target, profileName string, opts install.Options) ([]install.Result, []skill.Issue, error) {
+	resolved, issues, err := Resolve(libraryDir, profilesDir, projectDir, profileName)
+	if err != nil || len(issues) > 0 {
+		return nil, issues, err
+	}
+	var results []install.Result
+	var errs []error
+	for _, rs := range resolved {
+		bundle, err := skill.LoadBundle(filepath.Join(libraryDir, rs.Skill))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("profile link %q: %w", rs.Name, err))
+			continue
+		}
+		rendered, renderErrs := render.RenderAll(bundle, output, []render.Target{target}, render.RenderMeta{Source: rs.Source, Profile: rs.Profile})
+		if len(renderErrs) > 0 {
+			errs = append(errs, renderErrs...)
+			continue
+		}
+		if len(rendered) == 0 {
+			errs = append(errs, fmt.Errorf("profile link %q: target %s produced no render output", rs.Name, target))
+			continue
+		}
+		result, err := install.Install(install.RenderedSkill{Target: target, Name: rendered[0].Name, Path: rendered[0].Path}, opts)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("profile link %q: %w", rs.Name, err))
+			continue
+		}
+		results = append(results, result)
+	}
+	if len(errs) > 0 {
+		return nil, nil, errs[0]
+	}
+	return results, nil, nil
 }
