@@ -4,3 +4,7 @@ bin/
 dist/
 coverage.out
 *.test
+.github/coverage/
+.github/prerelease/
+.github/review/
+.omo/
