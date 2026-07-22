@@ -41,8 +41,11 @@ public final class CLICommandRunner {
         locator.locate("symskills")?.url
     }
 
-    /// Core subprocess runner.
-    private func runSubprocess(args: [String]) async throws -> Data {
+    /// Runs the subprocess and returns the raw result, including stdout,
+    /// regardless of exit code. Callers that need stdout even on a
+    /// non-zero exit (e.g. validation output) use this directly instead
+    /// of launching the process a second time.
+    private func runSubprocessResult(args: [String]) async throws -> CLIResult {
         guard let binaryURL = locateBinary() else {
             let errorMsg = "symskills binary not found. Install it via 'brew install danieljustus/tap/symskills' or build it first ('make build')."
             appendLog("ERROR: \(errorMsg)")
@@ -74,13 +77,22 @@ public final class CLICommandRunner {
         }
 
         if result.exitCode != 0 {
-            let cleanErr = result.stderrText
-            appendLog("Process exited with code \(result.exitCode): \(cleanErr)")
-            throw NSError(domain: "SymskillsRunner", code: Int(result.exitCode), userInfo: [NSLocalizedDescriptionKey: cleanErr.isEmpty ? "Process exited with code \(result.exitCode)" : cleanErr])
+            appendLog("Process exited with code \(result.exitCode): \(result.stderrText)")
         } else {
             appendLog("Completed successfully.")
-            return result.stdout
         }
+
+        return result
+    }
+
+    /// Core subprocess runner. Throws on a non-zero exit code.
+    private func runSubprocess(args: [String]) async throws -> Data {
+        let result = try await runSubprocessResult(args: args)
+        if result.exitCode != 0 {
+            let cleanErr = result.stderrText
+            throw NSError(domain: "SymskillsRunner", code: Int(result.exitCode), userInfo: [NSLocalizedDescriptionKey: cleanErr.isEmpty ? "Process exited with code \(result.exitCode)" : cleanErr])
+        }
+        return result.stdout
     }
     
     // MARK: - Command API
@@ -123,31 +135,10 @@ public final class CLICommandRunner {
     }
     
     public func getIssues(path: String) async throws -> [Issue] {
-        do {
-            let data = try await runSubprocess(args: ["validate", path, "--json"])
-            struct ValidateResult: Codable {
-                let valid: Bool
-                let issues: [Issue]
-            }
-            let res = try JSONDecoder().decode(ValidateResult.self, from: data)
-            return res.issues
-        } catch {
-            // If it failed because of errors, the JSON output is still on stdout. Let's see.
-            // When command fails with exit code, our runSubprocess throws. But we can parse issues out of the thrown error message if it is JSON, or we can run without throwing by catching output.
-            // Let's modify runSubprocess or just try running a custom command for validation.
-            // Actually, we can run validate with --json and if it fails, parse the stdout output.
-            // Let's implement a specific validation parser.
-            return try await runValidationSubprocess(path: path)
-        }
-    }
-    
-    private func runValidationSubprocess(path: String) async throws -> [Issue] {
-        guard let binaryURL = locateBinary() else {
-            throw NSError(domain: "SymskillsRunner", code: 404, userInfo: [NSLocalizedDescriptionKey: "symskills not found"])
-        }
         // Validation failures exit non-zero but still print the issue JSON
-        // on stdout, so decode regardless of the exit code.
-        let result = try await runner.run(binaryURL, arguments: ["validate", path, "--json"])
+        // on stdout, so decode regardless of the exit code instead of
+        // launching the process a second time.
+        let result = try await runSubprocessResult(args: ["validate", path, "--json"])
         struct ValidateResult: Codable {
             let valid: Bool
             let issues: [Issue]
