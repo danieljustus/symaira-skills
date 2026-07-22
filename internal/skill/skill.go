@@ -2,6 +2,7 @@
 package skill
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -138,6 +139,53 @@ func parseSkillMD(raw []byte) (Frontmatter, string, error) {
 	return fm, body, nil
 }
 
+// loadFrontmatterOnly reads SKILL.md's YAML frontmatter without allocating
+// the (often much larger) Markdown body, for callers that only need the
+// header metadata (e.g. ListLibrary).
+func loadFrontmatterOnly(root string) (Frontmatter, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return Frontmatter{}, err
+	}
+	f, err := os.Open(filepath.Join(abs, "SKILL.md"))
+	if err != nil {
+		return Frontmatter{}, fmt.Errorf("read SKILL.md: %w", err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	if !scanner.Scan() || scanner.Text() != "---" {
+		return Frontmatter{}, fmt.Errorf("SKILL.md must start with YAML frontmatter")
+	}
+
+	var fmText strings.Builder
+	closed := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "---") {
+			closed = true
+			break
+		}
+		fmText.WriteString(line)
+		fmText.WriteByte('\n')
+	}
+	if err := scanner.Err(); err != nil {
+		return Frontmatter{}, fmt.Errorf("read SKILL.md: %w", err)
+	}
+	if !closed {
+		return Frontmatter{}, fmt.Errorf("SKILL.md frontmatter is not closed")
+	}
+
+	var fm Frontmatter
+	if err := yaml.Unmarshal([]byte(fmText.String()), &fm); err != nil {
+		return Frontmatter{}, fmt.Errorf("parse SKILL.md frontmatter: %w", err)
+	}
+	if fm.Metadata == nil {
+		fm.Metadata = map[string]any{}
+	}
+	return fm, nil
+}
+
 func ValidateSkillName(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("skill name is required")
@@ -242,12 +290,18 @@ func ListLibrary(libraryDir string) ([]*Bundle, []Issue) {
 		if !entry.IsDir() {
 			continue
 		}
-		bundle, err := LoadBundle(filepath.Join(libraryDir, entry.Name()))
+		root := filepath.Join(libraryDir, entry.Name())
+		fm, err := loadFrontmatterOnly(root)
 		if err != nil {
 			issues = append(issues, Issue{Code: "skill_load", Severity: "error", Message: err.Error(), Path: entry.Name()})
 			continue
 		}
-		bundles = append(bundles, bundle)
+		abs, err := filepath.Abs(root)
+		if err != nil {
+			issues = append(issues, Issue{Code: "skill_load", Severity: "error", Message: err.Error(), Path: entry.Name()})
+			continue
+		}
+		bundles = append(bundles, &Bundle{Root: abs, Frontmatter: fm, Manifest: Manifest{Targets: map[string]TargetConfig{}}})
 	}
 	return bundles, issues
 }
