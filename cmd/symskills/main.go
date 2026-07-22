@@ -178,14 +178,33 @@ func newListCmd() *cobra.Command {
 	return cmd
 }
 
+func isSkillDir(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, "SKILL.md"))
+	return err == nil
+}
+
+func resolveSkillDir(args []string, requiredMsg string) (string, error) {
+	if len(args) == 1 {
+		return args[0], nil
+	}
+	if isSkillDir(".") {
+		return ".", nil
+	}
+	return "", fmt.Errorf("%s", requiredMsg)
+}
+
 func newInspectCmd() *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
-		Use:   "inspect <skill-dir>",
+		Use:   "inspect [skill-dir]",
 		Short: "Inspect a skill directory",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			bundle, err := skill.LoadBundle(args[0])
+			dir, err := resolveSkillDir(args, "skill-dir is required")
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "inspect skill")
+			}
+			bundle, err := skill.LoadBundle(dir)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "inspect skill")
 			}
@@ -203,11 +222,15 @@ func newInspectCmd() *cobra.Command {
 func newValidateCmd() *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
-		Use:   "validate <skill-dir>",
+		Use:   "validate [skill-dir]",
 		Short: "Validate a skill directory",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			bundle, err := skill.LoadBundle(args[0])
+			dir, err := resolveSkillDir(args, "skill-dir is required")
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "load skill")
+			}
+			bundle, err := skill.LoadBundle(dir)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "load skill")
 			}
@@ -255,10 +278,11 @@ func newRenderCmd() *cobra.Command {
 				}
 				return renderProfile(cmd, cfg, output, targets, profileName, jsonOut)
 			}
-			if len(args) != 1 {
-				return exitcodes.Wrap(fmt.Errorf("skill-dir is required without --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "render skill")
+			dir, err := resolveSkillDir(args, "skill-dir is required without --profile")
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "render skill")
 			}
-			bundle, err := skill.LoadBundle(args[0])
+			bundle, err := skill.LoadBundle(dir)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "load skill")
 			}
@@ -287,7 +311,7 @@ func printRenderResults(cmd *cobra.Command, results []render.Rendered, jsonOut b
 }
 
 func renderProfile(cmd *cobra.Command, cfg *config.Config, output string, targets []render.Target, profileName string, jsonOut bool) error {
-	resolved, issues, err := profile.Resolve(cfg.LibraryDir, cfg.ProfilesDir, ".", profileName)
+	results, issues, err := profile.RenderProfile(cfg.LibraryDir, cfg.ProfilesDir, ".", output, targets, profileName)
 	if err != nil {
 		return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
 	}
@@ -297,31 +321,12 @@ func renderProfile(cmd *cobra.Command, cfg *config.Config, output string, target
 		}
 		return exitcodes.Wrap(fmt.Errorf("profile has unresolved issues"), exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
 	}
-	if len(resolved) == 0 {
+	if len(results) == 0 {
 		if jsonOut {
 			return printJSON(cmd, []render.Rendered{})
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "No skills in profile")
 		return nil
-	}
-
-	var results []render.Rendered
-	var errs []error
-	for _, rs := range resolved {
-		bundle, err := skill.LoadBundle(filepath.Join(cfg.LibraryDir, rs.Skill))
-		if err != nil {
-			errs = append(errs, fmt.Errorf("profile link %q: %w", rs.Name, err))
-			continue
-		}
-		rendered, renderErrs := render.RenderAll(bundle, output, targets, render.RenderMeta{Source: rs.Source, Profile: rs.Profile})
-		if len(renderErrs) > 0 {
-			errs = append(errs, renderErrs...)
-			continue
-		}
-		results = append(results, rendered...)
-	}
-	if len(errs) > 0 {
-		return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render profile")
 	}
 	return printRenderResults(cmd, results, jsonOut)
 }
@@ -330,9 +335,9 @@ func newDiffCmd() *cobra.Command {
 	var targetName, output string
 	var jsonOut bool
 	cmd := &cobra.Command{
-		Use:   "diff <skill-dir>",
+		Use:   "diff [skill-dir]",
 		Short: "Compare rendered skill output with the installed target path",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target, err := render.ParseTarget(targetName)
 			if err != nil {
@@ -345,7 +350,11 @@ func newDiffCmd() *cobra.Command {
 			if output == "" {
 				output = cfg.RenderDir
 			}
-			bundle, err := skill.LoadBundle(args[0])
+			dir, err := resolveSkillDir(args, "skill-dir is required")
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "diff skill")
+			}
+			bundle, err := skill.LoadBundle(dir)
 			if err != nil {
 				return err
 			}
@@ -366,6 +375,10 @@ func newDiffCmd() *cobra.Command {
 			}
 			if jsonOut {
 				return printJSON(cmd, changes)
+			}
+			if len(changes) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "No changes detected.")
+				return nil
 			}
 			for _, change := range changes {
 				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", change.Status, change.Path)
@@ -405,10 +418,11 @@ func newInstallCmd() *cobra.Command {
 				}
 				return installProfile(cmd, cfg, output, target, profileName, opts, jsonOut)
 			}
-			if len(args) != 1 {
-				return exitcodes.Wrap(fmt.Errorf("skill-dir is required without --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "install skill")
+			dir, err := resolveSkillDir(args, "skill-dir is required without --profile")
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "install skill")
 			}
-			bundle, err := skill.LoadBundle(args[0])
+			bundle, err := skill.LoadBundle(dir)
 			if err != nil {
 				return err
 			}
@@ -441,9 +455,9 @@ func newInstallCmd() *cobra.Command {
 }
 
 func installProfile(cmd *cobra.Command, cfg *config.Config, output string, target render.Target, profileName string, opts install.Options, jsonOut bool) error {
-	resolved, issues, err := profile.Resolve(cfg.LibraryDir, cfg.ProfilesDir, ".", profileName)
+	results, issues, err := profile.InstallProfile(cfg.LibraryDir, cfg.ProfilesDir, ".", output, target, profileName, opts)
 	if err != nil {
-		return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
+		return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "install profile")
 	}
 	if len(issues) > 0 {
 		for _, issue := range issues {
@@ -451,40 +465,12 @@ func installProfile(cmd *cobra.Command, cfg *config.Config, output string, targe
 		}
 		return exitcodes.Wrap(fmt.Errorf("profile has unresolved issues"), exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
 	}
-	if len(resolved) == 0 {
+	if len(results) == 0 {
 		if jsonOut {
 			return printJSON(cmd, []install.Result{})
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "No skills in profile")
 		return nil
-	}
-
-	var results []install.Result
-	var errs []error
-	for _, rs := range resolved {
-		bundle, err := skill.LoadBundle(filepath.Join(cfg.LibraryDir, rs.Skill))
-		if err != nil {
-			errs = append(errs, fmt.Errorf("profile link %q: %w", rs.Name, err))
-			continue
-		}
-		rendered, renderErrs := render.RenderAll(bundle, output, []render.Target{target}, render.RenderMeta{Source: rs.Source, Profile: rs.Profile})
-		if len(renderErrs) > 0 {
-			errs = append(errs, renderErrs...)
-			continue
-		}
-		if len(rendered) == 0 {
-			errs = append(errs, fmt.Errorf("profile link %q: target %s produced no render output", rs.Name, target))
-			continue
-		}
-		result, err := install.Install(install.RenderedSkill{Target: target, Name: rendered[0].Name, Path: rendered[0].Path}, opts)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("profile link %q: %w", rs.Name, err))
-			continue
-		}
-		results = append(results, result)
-	}
-	if len(errs) > 0 {
-		return exitcodes.Wrap(errs[0], exitcodes.ExitConflict, exitcodes.KindConflict, "install profile")
 	}
 	if jsonOut {
 		return printJSON(cmd, results)

@@ -241,7 +241,7 @@ func Diff(renderedPath, installedPath string) ([]Change, error) {
 		return nil, err
 	}
 	seen := map[string]bool{}
-	var changes []Change
+	changes := []Change{}
 	for path, lhash := range left {
 		seen[path] = true
 		if rhash, ok := right[path]; !ok {
