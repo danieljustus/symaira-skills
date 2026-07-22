@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -111,10 +112,27 @@ func Install(item RenderedSkill, opts Options) (Result, error) {
 }
 
 func ensureManagedOrAbsent(path string) error {
-	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+	st, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
 		return err
+	}
+	if st.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return err
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		if _, err := os.Stat(target); errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if _, err := os.Stat(filepath.Join(target, markerFile)); err != nil {
+			return fmt.Errorf("refusing to overwrite unmanaged skill at %s", path)
+		}
+		return nil
 	}
 	if _, err := os.Stat(filepath.Join(path, markerFile)); err != nil {
 		return fmt.Errorf("refusing to overwrite unmanaged skill at %s", path)
@@ -186,10 +204,26 @@ func Uninstall(target render.Target, name string, opts Options) error {
 	if err != nil {
 		return err
 	}
-	if _, err := os.Lstat(dest); errors.Is(err, os.ErrNotExist) {
+	st, err := os.Lstat(dest)
+	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
 		return err
+	}
+	if st.Mode()&os.ModeSymlink != 0 {
+		linkTarget, err := os.Readlink(dest)
+		if err != nil {
+			return err
+		}
+		if !filepath.IsAbs(linkTarget) {
+			linkTarget = filepath.Join(filepath.Dir(dest), linkTarget)
+		}
+		if _, err := os.Stat(linkTarget); !errors.Is(err, os.ErrNotExist) {
+			if _, err := os.Stat(filepath.Join(linkTarget, markerFile)); err != nil {
+				return fmt.Errorf("refusing to remove unmanaged skill at %s", dest)
+			}
+		}
+		return os.RemoveAll(dest)
 	}
 	if _, err := os.Stat(filepath.Join(dest, markerFile)); err != nil {
 		return fmt.Errorf("refusing to remove unmanaged skill at %s", dest)
@@ -244,12 +278,19 @@ func fileHashes(root string) (map[string]string, error) {
 		if rel == markerFile {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		f, err := os.Open(path)
 		if err != nil {
 			return err
 		}
-		sum := sha256.Sum256(data)
-		out[rel] = hex.EncodeToString(sum[:])
+		hasher := sha256.New()
+		if _, err := io.Copy(hasher, f); err != nil {
+			_ = f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+		out[rel] = hex.EncodeToString(hasher.Sum(nil))
 		return nil
 	})
 	return out, err

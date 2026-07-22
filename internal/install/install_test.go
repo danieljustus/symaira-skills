@@ -54,6 +54,54 @@ func TestInstallCopyWritesMarkerAndUninstallRemovesManagedSkill(t *testing.T) {
 	}
 }
 
+func TestInstallAndUninstallDanglingSymlink(t *testing.T) {
+	home := t.TempDir()
+	rendered := t.TempDir()
+	writeFile(t, filepath.Join(rendered, "SKILL.md"), "---\nname: dangling\ndescription: test\n---\n")
+
+	result, err := Install(RenderedSkill{
+		Target: render.TargetClaude,
+		Name:   "dangling",
+		Path:   rendered,
+	}, Options{HomeDir: home, Scope: ScopeUser, Mode: ModeSymlink})
+	if err != nil {
+		t.Fatalf("Install symlink: %v", err)
+	}
+
+	// Remove rendered source to make result.Path a dangling symlink
+	if err := os.RemoveAll(rendered); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify it is a dangling symlink
+	if _, err := os.Stat(result.Path); !os.IsNotExist(err) {
+		t.Fatalf("expected stat to fail for dangling symlink")
+	}
+
+	// Re-install should succeed over dangling symlink
+	newRendered := t.TempDir()
+	writeFile(t, filepath.Join(newRendered, "SKILL.md"), "---\nname: dangling\ndescription: test\n---\n")
+	_, err = Install(RenderedSkill{
+		Target: render.TargetClaude,
+		Name:   "dangling",
+		Path:   newRendered,
+	}, Options{HomeDir: home, Scope: ScopeUser, Mode: ModeSymlink})
+	if err != nil {
+		t.Fatalf("Re-install over dangling symlink failed: %v", err)
+	}
+
+	// Make dangling again for Uninstall test
+	if err := os.RemoveAll(newRendered); err != nil {
+		t.Fatal(err)
+	}
+	if err := Uninstall(render.TargetClaude, "dangling", Options{HomeDir: home, Scope: ScopeUser}); err != nil {
+		t.Fatalf("Uninstall dangling symlink failed: %v", err)
+	}
+	if _, err := os.Lstat(result.Path); !os.IsNotExist(err) {
+		t.Fatalf("expected dangling symlink removed")
+	}
+}
+
 func TestDiffReportsChangedFiles(t *testing.T) {
 	rendered := t.TempDir()
 	installed := t.TempDir()
