@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // CopyTree copies the directory tree at src to dst. For each file and
@@ -13,6 +14,15 @@ import (
 // the directory entry. If skip returns true the entry is omitted; directories
 // are skipped recursively.
 func CopyTree(src, dst string, skip func(rel string, d os.DirEntry) bool) error {
+	realSrc, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		realSrc = src
+	}
+	realSrc, err = filepath.Abs(realSrc)
+	if err != nil {
+		realSrc = src
+	}
+
 	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -31,6 +41,28 @@ func CopyTree(src, dst string, skip func(rel string, d os.DirEntry) bool) error 
 			return nil
 		}
 		target := filepath.Join(dst, rel)
+		if d.Type()&os.ModeSymlink != 0 {
+			realPath, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return fmt.Errorf("eval symlink %q: %w", path, err)
+			}
+			realPath, err = filepath.Abs(realPath)
+			if err != nil {
+				return fmt.Errorf("abs path %q: %w", realPath, err)
+			}
+			relTarget, err := filepath.Rel(realSrc, realPath)
+			if err != nil || relTarget == ".." || strings.HasPrefix(relTarget, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("symlink %q escapes source root %q: points to %q", rel, src, realPath)
+			}
+			info, err := os.Stat(realPath)
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return CopyTree(realPath, target, skip)
+			}
+			return CopyFile(realPath, target, info.Mode().Perm())
+		}
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
