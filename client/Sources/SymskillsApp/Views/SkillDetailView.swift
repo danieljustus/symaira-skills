@@ -7,8 +7,7 @@ struct SkillDetailView: View {
     @State private var bundle: SkillBundle?
     @State private var issues: [Issue] = []
     @State private var errorMessage: String?
-    @State private var selectedTargetDiffs: [Change]?
-    @State private var diffTargetName: String = ""
+    @State private var diffPresentation: DiffPresentation?
     @State private var renderedPreview: Rendered?
     
     // Installation configuration per target
@@ -143,8 +142,8 @@ struct SkillDetailView: View {
         .task {
             await loadDetails()
         }
-        .sheet(item: $selectedTargetDiffs) { changes in
-            DiffView(target: diffTargetName, changes: changes)
+        .sheet(item: $diffPresentation) { presentation in
+            DiffView(target: presentation.targetName, changes: presentation.changes)
                 .frame(minWidth: 600, minHeight: 450)
         }
         .sheet(item: $renderedPreview) { rendered in
@@ -163,9 +162,10 @@ struct SkillDetailView: View {
         }
     }
     
-    private func showDiff(target: String, changes: [Change]) {
-        self.diffTargetName = target
-        self.selectedTargetDiffs = changes
+    private func showDiff(targetName: String, changes: [Change]) {
+        // Set target name and changes atomically so the sheet never renders
+        // with a stale or empty title.
+        self.diffPresentation = DiffPresentation(targetName: targetName, changes: changes)
     }
     
     private func showRender(rendered: Rendered) {
@@ -173,10 +173,15 @@ struct SkillDetailView: View {
     }
 }
 
-// MARK: - Extension for Bindable array sheets
-extension Array: @retroactive Identifiable where Element == Change {
-    public var id: String {
-        self.map(\.path).joined(separator: ",")
+// MARK: - Diff sheet presentation model
+/// Carries the diff target display name and the changes atomically, so the
+/// sheet item always provides both values together.
+private struct DiffPresentation: Identifiable {
+    let targetName: String
+    let changes: [Change]
+
+    var id: String {
+        targetName + ":" + changes.map(\.path).joined(separator: ",")
     }
 }
 
@@ -333,7 +338,7 @@ private struct TargetRow: View {
             actionMessage = nil
             isError = false
             let changes = try await runner.diff(path: path, target: target)
-            onDiff(target, changes)
+            onDiff(targetNameFor(target), changes)
         } catch {
             isError = true
             actionMessage = "Diff failed: \(error.localizedDescription)"

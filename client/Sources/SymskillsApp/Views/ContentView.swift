@@ -30,6 +30,7 @@ struct ContentView: View {
             }
             .listStyle(.sidebar)
             .navigationTitle("symskills")
+            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
             
             // Bottom status bar in sidebar
             .safeAreaInset(edge: .bottom) {
