@@ -5,6 +5,7 @@ struct LibraryView: View {
     
     @State private var result: SkillListResult?
     @State private var errorMessage: String?
+    @State private var importError: String?
     @State private var selectedSkill: SkillSummary?
     @State private var searchText: String = ""
     
@@ -139,6 +140,14 @@ struct LibraryView: View {
         .task {
             await loadSkills()
         }
+        .alert("Import Failed", isPresented: Binding(
+            get: { importError != nil },
+            set: { if !$0 { importError = nil } }
+        )) {
+            Button("OK") { importError = nil }
+        } message: {
+            Text(importError ?? "")
+        }
     }
     
     private var filteredSkills: [SkillSummary] {
@@ -176,7 +185,9 @@ struct LibraryView: View {
                     let _ = try await runner.importSkill(path: url.path)
                     await loadSkills()
                 } catch {
-                    errorMessage = error.localizedDescription
+                    // Dedicated surface: errorMessage is only rendered before the
+                    // first successful load and would be invisible once skills exist.
+                    importError = error.localizedDescription
                 }
             }
         }

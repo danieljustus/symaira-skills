@@ -103,13 +103,16 @@ struct SkillDetailView: View {
                                 }
                                 .pickerStyle(.radioGroup)
                                 .horizontalRadio()
-                                
-                                Picker("Scope:", selection: $installScope) {
-                                    Text("User").tag("user")
-                                    Text("Project").tag("project")
-                                }
-                                .pickerStyle(.radioGroup)
-                                .horizontalRadio()
+
+                                // Only User scope is offered. Project scope is hidden
+                                // because the GUI has no reliable "current project
+                                // directory" (Finder-launched apps get cwd "/"), and the
+                                // symskills CLI has no --project flag to pass one
+                                // explicitly — selecting it previously failed with
+                                // "mkdir /.opencode: read-only file system".
+                                Text("Scope: User")
+                                    .font(.subheadline)
+                                    .foregroundColor(Theme.textSecondary)
                             }
                         }
                         .padding(16)
