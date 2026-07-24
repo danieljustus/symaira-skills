@@ -153,10 +153,21 @@ struct DashboardView: View {
     }
     
     private func openFolder(at path: String) {
-        if let url = URL(string: "file://" + path) {
-            NSWorkspace.shared.open(url)
-        }
+        revealPathEnsuringExists(path)
     }
+}
+
+// MARK: - Finder reveal helper
+/// Reveals a path in Finder, creating it (including intermediate directories)
+/// first when it does not exist yet. Doctor succeeding does not guarantee that
+/// the config directory or cache folders have been created, so opening them
+/// would otherwise silently do nothing.
+private func revealPathEnsuringExists(_ path: String) {
+    let fileManager = FileManager.default
+    if !fileManager.fileExists(atPath: path) {
+        try? fileManager.createDirectory(atPath: path, withIntermediateDirectories: true)
+    }
+    NSWorkspace.shared.open(URL(fileURLWithPath: path))
 }
 
 // MARK: - Directory Card View
@@ -173,9 +184,7 @@ private struct DirectoryCard: View {
                     .font(.title2)
                 Spacer()
                 Button("Reveal") {
-                    if let url = URL(string: "file://" + path) {
-                        NSWorkspace.shared.open(url)
-                    }
+                    revealPathEnsuringExists(path)
                 }
                 .buttonStyle(SymairaSecondaryButtonStyle())
                 .controlSize(.small)
@@ -217,9 +226,7 @@ private struct TargetPathRow: View {
             
             Button {
                 let folder = (target.user as NSString).deletingLastPathComponent
-                if let url = URL(string: "file://" + folder) {
-                    NSWorkspace.shared.open(url)
-                }
+                revealPathEnsuringExists(folder)
             } label: {
                 Image(systemName: "folder")
             }
