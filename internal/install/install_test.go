@@ -46,8 +46,12 @@ func TestInstallCopyWritesMarkerAndUninstallRemovesManagedSkill(t *testing.T) {
 		t.Fatalf("marker missing: %v", err)
 	}
 
-	if err := Uninstall(render.TargetClaude, "managed", Options{HomeDir: home, Scope: ScopeUser}); err != nil {
+	removed, err := Uninstall(render.TargetClaude, "managed", Options{HomeDir: home, Scope: ScopeUser})
+	if err != nil {
 		t.Fatalf("Uninstall: %v", err)
+	}
+	if !removed {
+		t.Fatal("expected Uninstall to report removed=true")
 	}
 	if _, err := os.Stat(result.Path); !os.IsNotExist(err) {
 		t.Fatalf("expected installed skill removed, stat err=%v", err)
@@ -94,8 +98,12 @@ func TestInstallAndUninstallDanglingSymlink(t *testing.T) {
 	if err := os.RemoveAll(newRendered); err != nil {
 		t.Fatal(err)
 	}
-	if err := Uninstall(render.TargetClaude, "dangling", Options{HomeDir: home, Scope: ScopeUser}); err != nil {
+	removed, err := Uninstall(render.TargetClaude, "dangling", Options{HomeDir: home, Scope: ScopeUser})
+	if err != nil {
 		t.Fatalf("Uninstall dangling symlink failed: %v", err)
+	}
+	if !removed {
+		t.Fatal("expected Uninstall to report removed=true for dangling symlink")
 	}
 	if _, err := os.Lstat(result.Path); !os.IsNotExist(err) {
 		t.Fatalf("expected dangling symlink removed")

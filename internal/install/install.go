@@ -199,36 +199,45 @@ func InstallPath(target render.Target, name string, opts Options) (string, error
 	}
 }
 
-func Uninstall(target render.Target, name string, opts Options) error {
+// Uninstall removes a managed installed skill. It reports whether an
+// installation was actually removed (removed == false means nothing was
+// installed at the resolved path).
+func Uninstall(target render.Target, name string, opts Options) (removed bool, err error) {
 	dest, err := InstallPath(target, name, opts)
 	if err != nil {
-		return err
+		return false, err
 	}
 	st, err := os.Lstat(dest)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return false, nil
 	} else if err != nil {
-		return err
+		return false, err
 	}
 	if st.Mode()&os.ModeSymlink != 0 {
 		linkTarget, err := os.Readlink(dest)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if !filepath.IsAbs(linkTarget) {
 			linkTarget = filepath.Join(filepath.Dir(dest), linkTarget)
 		}
 		if _, err := os.Stat(linkTarget); !errors.Is(err, os.ErrNotExist) {
 			if _, err := os.Stat(filepath.Join(linkTarget, markerFile)); err != nil {
-				return fmt.Errorf("refusing to remove unmanaged skill at %s", dest)
+				return false, fmt.Errorf("refusing to remove unmanaged skill at %s", dest)
 			}
 		}
-		return os.RemoveAll(dest)
+		if err := os.RemoveAll(dest); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	if _, err := os.Stat(filepath.Join(dest, markerFile)); err != nil {
-		return fmt.Errorf("refusing to remove unmanaged skill at %s", dest)
+		return false, fmt.Errorf("refusing to remove unmanaged skill at %s", dest)
 	}
-	return os.RemoveAll(dest)
+	if err := os.RemoveAll(dest); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func Diff(renderedPath, installedPath string) ([]Change, error) {

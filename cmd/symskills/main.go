@@ -144,6 +144,9 @@ func newListCmd() *cobra.Command {
 				library = cfg.LibraryDir
 			}
 			bundles, issues := skill.ListLibrary(library)
+			if issues == nil {
+				issues = []skill.Issue{}
+			}
 			type item struct {
 				Name        string `json:"name"`
 				Description string `json:"description"`
@@ -235,6 +238,9 @@ func newValidateCmd() *cobra.Command {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "load skill")
 			}
 			issues := skill.Validate(bundle)
+			if issues == nil {
+				issues = []skill.Issue{}
+			}
 			result := map[string]any{"valid": len(issues) == 0, "issues": issues}
 			if jsonOut {
 				return printJSON(cmd, result)
@@ -483,6 +489,7 @@ func installProfile(cmd *cobra.Command, cfg *config.Config, output string, targe
 
 func newUninstallCmd() *cobra.Command {
 	var targetName, scopeName string
+	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "uninstall <name>",
 		Short: "Remove a managed installed skill",
@@ -492,8 +499,20 @@ func newUninstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := install.Uninstall(target, args[0], install.Options{Scope: install.Scope(scopeName)}); err != nil {
+			removed, err := install.Uninstall(target, args[0], install.Options{Scope: install.Scope(scopeName)})
+			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "uninstall skill")
+			}
+			if jsonOut {
+				return printJSON(cmd, map[string]any{
+					"name":    args[0],
+					"target":  string(target),
+					"removed": removed,
+				})
+			}
+			if !removed {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s was not installed for %s\n", args[0], target)
+				return nil
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Uninstalled %s from %s\n", args[0], target)
 			return nil
@@ -501,6 +520,7 @@ func newUninstallCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&targetName, "target", string(render.TargetOpenCode), "Target harness")
 	cmd.Flags().StringVar(&scopeName, "scope", string(install.ScopeUser), "Install scope: user or project")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	return cmd
 }
 
