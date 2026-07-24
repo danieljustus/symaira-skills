@@ -336,3 +336,33 @@ func jsonRoundTrip(in, out any) error {
 	}
 	return json.Unmarshal(data, out)
 }
+
+func TestWriteRenderedPreservesInstallMarker(t *testing.T) {
+	// Regression test for #65: re-rendering a directory that contains
+	// a .symskills.json marker must not wipe it (symlink-mode installs
+	// share the render-cache directory).
+	tmp := t.TempDir()
+	marker := filepath.Join(tmp, ".symskills.json")
+	if err := os.WriteFile(marker, []byte(`{"installed":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "SKILL.md"), "---\nname: marker-test\ndescription: test\n---\n# Body\n")
+
+	item := Rendered{Name: "marker-test", SkillMD: "---\nname: marker-test\ndescription: test\n---\n# Body\n"}
+	if err := writeRendered(root, tmp, item, TargetOpenCode); err != nil {
+		t.Fatalf("writeRendered: %v", err)
+	}
+
+	if _, err := os.Stat(marker); os.IsNotExist(err) {
+		t.Fatal(".symskills.json was wiped by re-render — regression of #65")
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"installed":true}` {
+		t.Fatalf("marker content changed: got %q", string(data))
+	}
+}
