@@ -900,3 +900,114 @@ func writeTestSkill(t *testing.T, dir, name, description string) {
 		t.Fatal(err)
 	}
 }
+
+func TestListJSONEmitsEmptyIssuesArray(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	stdout, _, err := runCmd(t, home, "list", "--json")
+	if err != nil {
+		t.Fatalf("list --json failed: %v", err)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse JSON %q: %v", stdout, err)
+	}
+	issues, ok := resp["issues"]
+	if !ok {
+		t.Fatalf("expected issues field in JSON output: %s", stdout)
+	}
+	if issues == nil {
+		t.Fatalf("expected issues to be [] instead of null: %s", stdout)
+	}
+	arr, ok := issues.([]any)
+	if !ok {
+		t.Fatalf("expected issues to be a JSON array, got: %s", stdout)
+	}
+	if len(arr) != 0 {
+		t.Fatalf("expected empty issues array, got: %s", stdout)
+	}
+}
+
+func TestValidateJSONEmitsEmptyIssuesArray(t *testing.T) {
+	home := t.TempDir()
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "valid-skill", "For testing validate JSON issues array")
+
+	stdout, _, err := runCmd(t, home, "validate", "--json", skillDir)
+	if err != nil {
+		t.Fatalf("validate --json failed: %v", err)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse JSON %q: %v", stdout, err)
+	}
+	issues, ok := resp["issues"]
+	if !ok {
+		t.Fatalf("expected issues field in JSON output: %s", stdout)
+	}
+	if issues == nil {
+		t.Fatalf("expected issues to be [] instead of null: %s", stdout)
+	}
+	arr, ok := issues.([]any)
+	if !ok {
+		t.Fatalf("expected issues to be a JSON array, got: %s", stdout)
+	}
+	if len(arr) != 0 {
+		t.Fatalf("expected empty issues array, got: %s", stdout)
+	}
+}
+
+func TestUninstallNotInstalledReportsNothingToDo(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	// Text output for a skill that was never installed
+	stdout, _, err := runCmd(t, home, "uninstall", "ghost-skill")
+	if err != nil {
+		t.Fatalf("uninstall of non-installed skill failed: %v", err)
+	}
+	if !strings.Contains(stdout, "ghost-skill was not installed for opencode") {
+		t.Errorf("expected 'not installed' message, got: %q", stdout)
+	}
+	if strings.Contains(stdout, "Uninstalled") {
+		t.Errorf("must not claim success when nothing was installed, got: %q", stdout)
+	}
+
+	// JSON output exposes removed:false
+	stdout, _, err = runCmd(t, home, "uninstall", "--json", "ghost-skill")
+	if err != nil {
+		t.Fatalf("uninstall --json failed: %v", err)
+	}
+	var resp struct {
+		Name    string `json:"name"`
+		Target  string `json:"target"`
+		Removed bool   `json:"removed"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse JSON %q: %v", stdout, err)
+	}
+	if resp.Removed {
+		t.Errorf("expected removed:false for no-op uninstall, got: %s", stdout)
+	}
+	if resp.Name != "ghost-skill" || resp.Target != "opencode" {
+		t.Errorf("unexpected uninstall JSON: %+v", resp)
+	}
+
+	// JSON output exposes removed:true after a real uninstall
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "real-skill", "For testing uninstall JSON removed true")
+	if _, _, err := runCmd(t, home, "install", "--mode", "copy", skillDir); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+	stdout, _, err = runCmd(t, home, "uninstall", "--json", "real-skill")
+	if err != nil {
+		t.Fatalf("uninstall --json failed: %v", err)
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse JSON %q: %v", stdout, err)
+	}
+	if !resp.Removed {
+		t.Errorf("expected removed:true after real uninstall, got: %s", stdout)
+	}
+}
