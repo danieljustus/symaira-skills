@@ -68,6 +68,8 @@ jobs:
             echo "::warning::NOTARY_API_KEY secret is not set. Skipping notarization."
             exit 0
           fi
+          KEY_FILE="$RUNNER_TEMP/notary-api-key.p8"
+          echo "${NOTARY_API_KEY}" | base64 --decode > "$KEY_FILE"
           for ARCH in amd64 arm64; do
             for f in dist/*_darwin_${ARCH}/*; do
               if [ -f "$f" ] && file "$f" | grep -q "Mach-O"; then
@@ -75,14 +77,15 @@ jobs:
                 ZIP_PATH="$RUNNER_TEMP/notarize_${ARCH}.zip"
                 ditto -c -k --keepParent "$f" "$ZIP_PATH"
                 xcrun notarytool submit "$ZIP_PATH" \
-                  --apple-id "${NOTARY_API_KEY_ID}" \
-                  --team-id "${NOTARY_API_ISSUER}" \
-                  --password "${NOTARY_API_KEY}" \
+                  --key "$KEY_FILE" \
+                  --key-id "${NOTARY_API_KEY_ID}" \
+                  --issuer "${NOTARY_API_ISSUER}" \
                   --wait
                 rm -f "$ZIP_PATH"
               fi
             done
           done
+          rm -f "$KEY_FILE"
 
       - name: Clean up signing material
         if: always()
