@@ -11,11 +11,38 @@ permissions:
 jobs:
   release-dmg:
     runs-on: macos-15
+    environment: release
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Import signing certificate
+        id: signing
+        env:
+          CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          if [ -z "${CERTIFICATE_P12:-}" ]; then
+            echo "::warning::CERTIFICATE_P12 secret is not set. Building unsigned."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          CERTIFICATE_PATH="$RUNNER_TEMP/certificate.p12"
+          echo -n "$CERTIFICATE_P12" | base64 --decode -o "$CERTIFICATE_PATH"
+          security import "$CERTIFICATE_PATH" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -25,12 +52,52 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Run Package Script
+      - name: Build, Sign, and Package DMG
         run: ./client/package.sh
 
+      - name: Notarize DMG
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          NOTARY_API_KEY: ${{ secrets.NOTARY_API_KEY }}
+          NOTARY_API_ISSUER: ${{ secrets.NOTARY_API_ISSUER }}
+          NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+        run: |
+          if [ -z "${NOTARY_API_KEY:-}" ]; then
+            echo "::warning::NOTARY_API_KEY secret is not set. Skipping notarization."
+            exit 0
+          fi
+          DMG="client/build/Symskills.dmg"
+          if [ ! -f "$DMG" ]; then
+            echo "::error::DMG not found at $DMG"
+            exit 1
+          fi
+          KEY_FILE="$RUNNER_TEMP/notary-api-key.p8"
+          echo "${NOTARY_API_KEY}" | base64 --decode > "$KEY_FILE"
+          xcrun notarytool submit "$DMG" \
+            --key "$KEY_FILE" \
+            --key-id "${NOTARY_API_KEY_ID}" \
+            --issuer "${NOTARY_API_ISSUER}" \
+            --wait
+          rm -f "$KEY_FILE"
+
+      - name: Staple notarization ticket
+        if: steps.signing.outputs.signed == 'true'
+        run: |
+          DMG="client/build/Symskills.dmg"
+          if [ -f "$DMG" ]; then
+            xcrun stapler staple "$DMG" || echo "::warning::Stapling failed — skipping"
+          fi
+
       - name: Create Release and Upload DMG
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: client/build/Symskills.dmg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Clean up signing material
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          fi
