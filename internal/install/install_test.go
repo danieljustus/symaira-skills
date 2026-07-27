@@ -220,6 +220,31 @@ func TestInstallPathUserAllTargets(t *testing.T) {
 	}
 }
 
+func TestTargetDir(t *testing.T) {
+	home := t.TempDir()
+	opts := Options{HomeDir: home, Scope: ScopeUser}
+
+	cases := []struct {
+		target render.Target
+		want   string
+	}{
+		{render.TargetOpenCode, filepath.Join(home, ".config", "opencode", "skills")},
+		{render.TargetClaude, filepath.Join(home, ".claude", "skills")},
+		{render.TargetCodex, filepath.Join(home, ".agents", "skills")},
+		{render.TargetHermes, filepath.Join(home, ".hermes", "skills", "symaira")},
+	}
+
+	for _, c := range cases {
+		got, err := TargetDir(c.target, opts)
+		if err != nil {
+			t.Fatalf("TargetDir(%s): %v", c.target, err)
+		}
+		if got != c.want {
+			t.Errorf("TargetDir(%s) = %q, want %q", c.target, got, c.want)
+		}
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
