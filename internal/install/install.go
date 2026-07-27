@@ -199,6 +199,15 @@ func InstallPath(target render.Target, name string, opts Options) (string, error
 	}
 }
 
+// TargetDir returns the base installation directory for a target without requiring a skill name.
+func TargetDir(target render.Target, opts Options) (string, error) {
+	path, err := InstallPath(target, "placeholder", opts)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Dir(path), nil
+}
+
 // Uninstall removes a managed installed skill. It reports whether an
 // installation was actually removed (removed == false means nothing was
 // installed at the resolved path).

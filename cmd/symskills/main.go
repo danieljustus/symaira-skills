@@ -648,8 +648,11 @@ func newDoctorCmd() *cobra.Command {
 			}
 			paths := []targetPath{}
 			for _, target := range render.DefaultTargets {
-				path, _ := install.InstallPath(target, "<name>", install.Options{Scope: install.ScopeUser})
-				paths = append(paths, targetPath{Target: target, User: path})
+				dir, err := install.TargetDir(target, install.Options{Scope: install.ScopeUser})
+				if err != nil {
+					return err
+				}
+				paths = append(paths, targetPath{Target: target, User: dir})
 			}
 			result := map[string]any{
 				"config_path":  config.ConfigPath(),

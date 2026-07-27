@@ -469,16 +469,28 @@ func TestDoctorCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doctor failed: %v", err)
 	}
+	type targetEntry struct {
+		Target string `json:"target"`
+		User   string `json:"user"`
+	}
 	var resp struct {
-		ConfigPath string `json:"config_path"`
-		Config     any    `json:"config"`
-		Targets    []any  `json:"targets"`
+		ConfigPath string        `json:"config_path"`
+		Config     any           `json:"config"`
+		Targets    []targetEntry `json:"targets"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
 		t.Fatalf("parse JSON: %v", err)
 	}
 	if resp.ConfigPath == "" {
 		t.Error("expected config_path to be populated")
+	}
+	if len(resp.Targets) == 0 {
+		t.Error("expected targets array to be populated")
+	}
+	for _, entry := range resp.Targets {
+		if entry.User == "" {
+			t.Errorf("expected target %q user path to be non-empty", entry.Target)
+		}
 	}
 }
 
