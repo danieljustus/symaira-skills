@@ -95,6 +95,62 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Update Homebrew Cask
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          if [ -z "${HOMEBREW_TAP_GITHUB_TOKEN:-}" ]; then
+            echo "::warning::HOMEBREW_TAP_GITHUB_TOKEN not set — skipping Cask update"
+            exit 0
+          fi
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          DMG="client/build/Symskills.dmg"
+          SHA256=$(shasum -a 256 "$DMG" | cut -d' ' -f1)
+          echo "Version: $VERSION  SHA256: $SHA256"
+
+          git clone "https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/danieljustus/homebrew-tap.git" tap
+          cd tap
+          mkdir -p Casks
+          cat > "Casks/symskills.rb" << CASKRB
+          cask "symskills" do
+            version "${VERSION}"
+            sha256 "${SHA256}"
+
+            url "https://github.com/danieljustus/symaira-skills/releases/download/v#{version}/Symskills.dmg"
+            name "Symskills"
+            desc "Portable Skill SSOT manager for local AI agent harnesses"
+            homepage "https://github.com/danieljustus/symaira-skills"
+
+            livecheck do
+              url "https://github.com/danieljustus/symaira-skills/releases/latest"
+              strategy :header_match
+              regex(/Symskills\.dmg/i)
+            end
+
+            depends_on macos: :sonoma
+
+            app "Symskills.app"
+
+            zap trash: [
+              "~/Library/Application Support/dev.symaira.Symskills",
+              "~/Library/Preferences/dev.symaira.Symskills.plist",
+              "~/Library/Caches/dev.symaira.Symskills",
+            ]
+          end
+          CASKRB
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/symskills.rb
+          if git diff --cached --quiet; then
+            echo "Cask unchanged — nothing to commit"
+          else
+            git commit -m "symskills ${TAG}"
+            git push
+            echo "Cask updated to ${VERSION}"
+          fi
+
       - name: Clean up signing material
         if: always()
         run: |
