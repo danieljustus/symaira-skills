@@ -36,6 +36,7 @@ struct TelemetryLogView: View {
                                 Text(line)
                                     .font(.system(.caption2, design: .monospaced))
                                     .foregroundColor(colorFor(line))
+                                    .fixedSize(horizontal: true, vertical: false)
                                     .textSelection(.enabled)
                                     .id(index)
                             }
