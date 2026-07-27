@@ -100,10 +100,17 @@ func newInitCmd() *cobra.Command {
 func newImportCmd() *cobra.Command {
 	var library string
 	var jsonOut bool
+	var batch bool
 	cmd := &cobra.Command{
 		Use:   "import <skill-dir>",
 		Short: "Import an existing skill directory into the symskills library",
-		Args:  cobra.ExactArgs(1),
+		Long: `Import a skill directory or batch-import skills from a parent directory.
+
+Without --batch: imports a single skill directory containing SKILL.md.
+With --batch: scans the given directory for immediate subdirectories
+containing SKILL.md and imports each one. If the directory itself is a
+skill, it falls back to single-skill import.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -112,6 +119,30 @@ func newImportCmd() *cobra.Command {
 			if library == "" {
 				library = cfg.LibraryDir
 			}
+
+			if batch {
+				results := skill.ImportSkills(args[0], library)
+				if jsonOut {
+					return printJSON(cmd, results)
+				}
+				imported, skipped, failed := 0, 0, 0
+				for _, r := range results {
+					switch r.Status {
+					case skill.BatchImported:
+						fmt.Fprintf(cmd.OutOrStdout(), "Imported %s to %s\n", r.Name, r.Path)
+						imported++
+					case skill.BatchSkipped:
+						fmt.Fprintf(cmd.OutOrStdout(), "Skipped %s: %s\n", r.Name, r.Error)
+						skipped++
+					case skill.BatchFailed:
+						fmt.Fprintf(cmd.OutOrStdout(), "Failed %s: %s\n", r.Name, r.Error)
+						failed++
+					}
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "\nSummary: %d imported, %d skipped, %d failed\n", imported, skipped, failed)
+				return nil
+			}
+
 			result, err := skill.ImportSkill(args[0], library)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "import skill")
@@ -125,6 +156,7 @@ func newImportCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&library, "library", "", "Library directory")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
+	cmd.Flags().BoolVar(&batch, "batch", false, "Batch-import all skills from subdirectories")
 	return cmd
 }
 

@@ -122,6 +122,15 @@ public final class CLICommandRunner {
         let res = try JSONDecoder().decode(ImportRes.self, from: data)
         return ImportResult(name: res.name, path: res.path)
     }
+
+    public func importSkills(path: String) async throws -> BatchImportSummary {
+        let data = try await runSubprocess(args: ["import", path, "--batch", "--json"])
+        let results = try JSONDecoder().decode([BatchImportResult].self, from: data)
+        let imported = results.filter { $0.status == "imported" }.count
+        let skipped = results.filter { $0.status == "skipped" }.count
+        let failed = results.filter { $0.status == "failed" }.count
+        return BatchImportSummary(imported: imported, skipped: skipped, failed: failed, results: results)
+    }
     
     public func validate(path: String) async throws -> Bool {
         // Runs validate. If validation fails, process exit code is non-zero (ExitData).

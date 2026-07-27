@@ -6,6 +6,7 @@ struct LibraryView: View {
     @State private var result: SkillListResult?
     @State private var errorMessage: String?
     @State private var importError: String?
+    @State private var importSummary: BatchImportSummary?
     @State private var selectedSkill: SkillSummary?
     @State private var searchText: String = ""
     
@@ -148,6 +149,16 @@ struct LibraryView: View {
         } message: {
             Text(importError ?? "")
         }
+        .alert("Import Complete", isPresented: Binding(
+            get: { importSummary != nil },
+            set: { if !$0 { importSummary = nil } }
+        )) {
+            Button("OK") { importSummary = nil }
+        } message: {
+            if let summary = importSummary {
+                Text("\(summary.imported) imported, \(summary.skipped) skipped, \(summary.failed) failed")
+            }
+        }
     }
     
     private var filteredSkills: [SkillSummary] {
@@ -172,7 +183,8 @@ struct LibraryView: View {
     
     private func triggerImportPanel() {
         let panel = NSOpenPanel()
-        panel.title = "Import Skill Directory"
+        panel.title = "Import Skills"
+        panel.message = "Select a skill directory or a parent folder containing multiple skill subdirectories."
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.canCreateDirectories = false
@@ -182,11 +194,13 @@ struct LibraryView: View {
             guard response == .OK, let url = panel.url else { return }
             Task {
                 do {
-                    let _ = try await runner.importSkill(path: url.path)
+                    let summary = try await runner.importSkills(path: url.path)
                     await loadSkills()
+                    // Only show summary for batch imports (more than one result, or failures)
+                    if summary.results.count > 1 || summary.failed > 0 || summary.skipped > 0 {
+                        importSummary = summary
+                    }
                 } catch {
-                    // Dedicated surface: errorMessage is only rendered before the
-                    // first successful load and would be invisible once skills exist.
                     importError = error.localizedDescription
                 }
             }

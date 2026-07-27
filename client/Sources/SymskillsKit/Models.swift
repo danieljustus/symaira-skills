@@ -41,6 +41,20 @@ public struct ImportResult: Codable, Equatable, Sendable {
     public let path: String
 }
 
+public struct BatchImportResult: Codable, Equatable, Sendable {
+    public let name: String
+    public let path: String?
+    public let status: String
+    public let error: String?
+}
+
+public struct BatchImportSummary {
+    public let imported: Int
+    public let skipped: Int
+    public let failed: Int
+    public let results: [BatchImportResult]
+}
+
 public struct SkillListResult: Codable, Equatable, Sendable {
     public let skills: [SkillSummary]
     public let issues: [Issue]

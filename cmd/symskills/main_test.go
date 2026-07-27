@@ -101,6 +101,103 @@ func TestImportCommand(t *testing.T) {
 	}
 }
 
+func TestBatchImportCommand(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	// Create a parent directory with two skill subdirectories
+	parent := t.TempDir()
+	// Create the skill subdirectories first (writeTestSkill writes SKILL.md but doesn't create the dir)
+	mkdir := func(name string) string {
+		dir := filepath.Join(parent, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	writeTestSkill(t, mkdir("batch-one"), "batch-one", "First batch skill")
+	writeTestSkill(t, mkdir("batch-two"), "batch-two", "Second batch skill")
+
+	// Create a non-skill directory (should be skipped silently)
+	if err := os.MkdirAll(filepath.Join(parent, "not-skill"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Batch import
+	stdout, stderr, err := runCmd(t, home, "import", "--batch", parent)
+	if err != nil {
+		t.Fatalf("batch import failed: %v, stderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "Imported batch-one") {
+		t.Errorf("expected batch-one imported, got: %q", stdout)
+	}
+	if !strings.Contains(stdout, "Imported batch-two") {
+		t.Errorf("expected batch-two imported, got: %q", stdout)
+	}
+	if !strings.Contains(stdout, "Summary: 2 imported, 0 skipped, 0 failed") {
+		t.Errorf("expected summary in output, got: %q", stdout)
+	}
+
+	// Re-import (skills already exist) — should report failed
+	stdout, stderr, err = runCmd(t, home, "import", "--batch", parent)
+	if err != nil {
+		t.Fatalf("batch re-import failed: %v, stderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "Summary: 0 imported, 0 skipped, 2 failed") {
+		t.Errorf("expected 2 failed on re-import, got: %q", stdout)
+	}
+
+	// Batch import from a fresh parent with --json
+	parent2 := t.TempDir()
+	dir1 := filepath.Join(parent2, "json-one")
+	dir2 := filepath.Join(parent2, "json-two")
+	if err := os.MkdirAll(dir1, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSkill(t, dir1, "json-one", "JSON batch skill")
+	writeTestSkill(t, dir2, "json-two", "Second JSON skill")
+
+	stdout, _, err = runCmd(t, home, "import", "--batch", "--json", parent2)
+	if err != nil {
+		t.Fatalf("batch import --json failed: %v", err)
+	}
+	var results []struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+		Error  string `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &results); err != nil {
+		t.Fatalf("parse batch JSON output: %v, raw: %q", err, stdout)
+	}
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 results, got %d: %s", len(results), stdout)
+	}
+	imported := 0
+	for _, r := range results {
+		t.Logf("result: name=%s status=%s error=%q", r.Name, r.Status, r.Error)
+		if r.Status == "imported" {
+			imported++
+		}
+	}
+	if imported < 2 {
+		t.Errorf("expected 2 imported, got %d: %+v", imported, results)
+	}
+
+	// Batch import from a single-skill directory (fallback)
+	single := t.TempDir()
+	writeTestSkill(t, single, "single-skill", "A single skill dir")
+	stdout, _, err = runCmd(t, home, "import", "--batch", single)
+	if err != nil {
+		t.Fatalf("batch import on single skill failed: %v", err)
+	}
+	if !strings.Contains(stdout, "Imported single-skill") {
+		t.Errorf("expected single-skill imported in fallback, got: %q", stdout)
+	}
+}
+
 func TestInspectCommand(t *testing.T) {
 	home := t.TempDir()
 	skillDir := t.TempDir()
