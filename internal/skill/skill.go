@@ -78,6 +78,23 @@ type ImportResult struct {
 	Path string `json:"path"`
 }
 
+// BatchImportStatus is the outcome of one batch-imported skill.
+type BatchImportStatus string
+
+const (
+	BatchImported BatchImportStatus = "imported"
+	BatchSkipped  BatchImportStatus = "skipped"
+	BatchFailed   BatchImportStatus = "failed"
+)
+
+// BatchImportResult describes one item in a batch import.
+type BatchImportResult struct {
+	Name   string            `json:"name"`
+	Path   string            `json:"path,omitempty"`
+	Status BatchImportStatus `json:"status"`
+	Error  string            `json:"error,omitempty"`
+}
+
 // LoadBundle reads SKILL.md and optional symskills.toml from a skill root.
 func LoadBundle(root string) (*Bundle, error) {
 	abs, err := filepath.Abs(root)
@@ -273,6 +290,72 @@ func ImportSkill(srcRoot, libraryDir string) (ImportResult, error) {
 		return ImportResult{}, err
 	}
 	return ImportResult{Name: name, Path: dst}, nil
+}
+
+// isSkillDir reports whether path contains a SKILL.md file.
+func isSkillDir(path string) bool {
+	fi, err := os.Stat(filepath.Join(path, "SKILL.md"))
+	return err == nil && fi.Mode().IsRegular()
+}
+
+// ImportSkills discovers and imports skill directories from a parent directory.
+// If the given directory itself contains SKILL.md it falls back to a single-skill import.
+// Otherwise it scans immediate subdirectories for SKILL.md and imports each one.
+// It never fails entirely on a single bad subdirectory — per-item results are returned.
+func ImportSkills(parentDir, libraryDir string) []BatchImportResult {
+	// If the directory itself is a skill, fall back to single import.
+	if isSkillDir(parentDir) {
+		res, err := ImportSkill(parentDir, libraryDir)
+		if err != nil {
+			return []BatchImportResult{{
+				Name:   filepath.Base(parentDir),
+				Status: BatchFailed,
+				Error:  err.Error(),
+			}}
+		}
+		return []BatchImportResult{{
+			Name:   res.Name,
+			Path:   res.Path,
+			Status: BatchImported,
+		}}
+	}
+
+	entries, err := os.ReadDir(parentDir)
+	if err != nil {
+		return []BatchImportResult{{
+			Name:   filepath.Base(parentDir),
+			Status: BatchFailed,
+			Error:  err.Error(),
+		}}
+	}
+
+	var results []BatchImportResult
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		subdir := filepath.Join(parentDir, entry.Name())
+		if !isSkillDir(subdir) {
+			continue
+		}
+		res, err := ImportSkill(subdir, libraryDir)
+		if err != nil {
+			results = append(results, BatchImportResult{
+				Name:   entry.Name(),
+				Status: BatchFailed,
+				Error:  err.Error(),
+			})
+			continue
+		}
+		if res.Name != "" && res.Path != "" {
+			results = append(results, BatchImportResult{
+				Name:   res.Name,
+				Path:   res.Path,
+				Status: BatchImported,
+			})
+		}
+	}
+	return results
 }
 
 // ListLibrary returns loaded bundles under a library directory.

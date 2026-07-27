@@ -203,6 +203,121 @@ prepend = "prep.md"
 	}
 }
 
+func TestImportSkillsBatchImportsMultipleSubdirectories(t *testing.T) {
+	src := t.TempDir()
+
+	// Create two valid skill subdirectories
+	skill1 := filepath.Join(src, "skill-alpha")
+	writeFile(t, filepath.Join(skill1, "SKILL.md"), `---
+name: skill-alpha
+description: First test skill.
+---
+Body alpha.
+`)
+	skill2 := filepath.Join(src, "skill-beta")
+	writeFile(t, filepath.Join(skill2, "SKILL.md"), `---
+name: skill-beta
+description: Second test skill.
+---
+Body beta.
+`)
+
+	// Create a non-skill directory (no SKILL.md)
+	noSkill := filepath.Join(src, "not-a-skill")
+	if err := os.MkdirAll(noSkill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a broken skill directory (SKILL.md without frontmatter)
+	broken := filepath.Join(src, "broken-skill")
+	writeFile(t, filepath.Join(broken, "SKILL.md"), "No frontmatter here.\n")
+
+	dst := filepath.Join(t.TempDir(), "library")
+	results := ImportSkills(src, dst)
+
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 results, got %d: %#v", len(results), results)
+	}
+
+	imported := make(map[string]BatchImportResult)
+	var failed int
+	for _, r := range results {
+		if r.Status == BatchImported {
+			imported[r.Name] = r
+		} else if r.Status == BatchFailed {
+			failed++
+		}
+	}
+
+	if _, ok := imported["skill-alpha"]; !ok {
+		t.Errorf("skill-alpha was not imported: results=%#v", results)
+	}
+	if _, ok := imported["skill-beta"]; !ok {
+		t.Errorf("skill-beta was not imported: results=%#v", results)
+	}
+	if failed < 1 {
+		t.Errorf("expected at least 1 failed (broken-skill), got %d", failed)
+	}
+
+	// Verify imported skills were actually written
+	for name, r := range imported {
+		if _, err := os.Stat(filepath.Join(dst, name, "SKILL.md")); err != nil {
+			t.Errorf("imported skill %q SKILL.md missing at %s: %v", name, r.Path, err)
+		}
+	}
+}
+
+func TestImportSkillsFallsBackForSingleSkillDir(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "SKILL.md"), `---
+name: solo-skill
+description: A single skill directory.
+---
+Body.
+`)
+	dst := filepath.Join(t.TempDir(), "library")
+	results := ImportSkills(src, dst)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for single-skill dir, got %d: %#v", len(results), results)
+	}
+	if results[0].Status != BatchImported {
+		t.Fatalf("expected imported, got %s: %#v", results[0].Status, results)
+	}
+	if results[0].Name != "solo-skill" {
+		t.Fatalf("expected name solo-skill, got %q", results[0].Name)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "solo-skill", "SKILL.md")); err != nil {
+		t.Fatalf("imported SKILL.md missing: %v", err)
+	}
+}
+
+func TestImportSkillsDuplicateIsSkipped(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "dup-skill", "SKILL.md"), `---
+name: dup-skill
+description: Test duplicate.
+---
+Body.
+`)
+
+	dst := filepath.Join(t.TempDir(), "library")
+	// First import
+	r1 := ImportSkills(src, dst)
+	if len(r1) != 1 || r1[0].Status != BatchImported {
+		t.Fatalf("first import should succeed: %#v", r1)
+	}
+
+	// Second import (same skill already exists)
+	r2 := ImportSkills(src, dst)
+	if len(r2) != 1 || r2[0].Status != BatchFailed {
+		t.Fatalf("second import should fail (duplicate): %#v", r2)
+	}
+	if r2[0].Error == "" {
+		t.Fatal("expected error message for duplicate")
+	}
+}
+
 func TestListLibrary(t *testing.T) {
 	// 1. Nonexistent library directory
 	bundles, issues := ListLibrary("/nonexistent/library")
