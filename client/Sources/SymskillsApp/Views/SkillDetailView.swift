@@ -400,16 +400,21 @@ private struct RenderedPreviewView: View {
                     .padding(12)
                     .glassmorphicPanel(addCorners: false)
                     
-                    TextEditor(text: .constant(rendered.skillMd ?? ""))
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundColor(Theme.textPrimary)
-                        .scrollContentBackground(.hidden)
-                        .background(Theme.bgCard)
-                        .cornerRadius(8)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Theme.borderGlass, lineWidth: 1)
-                        )
+                    ScrollView([.vertical, .horizontal]) {
+                        Text(rendered.skillMd ?? "")
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundColor(Theme.textPrimary)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(14)
+                    }
+                    .background(Theme.bgCard)
+                    .cornerRadius(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Theme.borderGlass, lineWidth: 1)
+                    )
                 }
                 .padding(24)
             }
