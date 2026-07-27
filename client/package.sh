@@ -23,6 +23,14 @@ fi
 echo "=== 1. Building Go symskills Binary ==="
 cd ..
 CGO_ENABLED=0 go build -ldflags "-s -w" -o symskills cmd/symskills/main.go
+
+if [ -n "$CODESIGN_IDENTITY" ]; then
+    echo "Signing Go binary with identity: $CODESIGN_IDENTITY"
+    codesign --force --timestamp --options runtime -s "$CODESIGN_IDENTITY" symskills
+    echo "Go binary signature verification:"
+    codesign -dvvv symskills 2>&1 | head -5
+fi
+
 cd client
 
 echo "=== 2. Generating Xcode Project ==="
