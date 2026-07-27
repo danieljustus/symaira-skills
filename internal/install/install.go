@@ -273,6 +273,12 @@ func fileHashes(root string) (map[string]string, error) {
 	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
 		return out, nil
 	}
+	// Resolve any symlink in the root path before walking, so WalkDir
+	// sees the actual directory and Lstat-based DirEntry.IsDir() works
+	// for symlink-mode installs where root is a symlink to a directory.
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err

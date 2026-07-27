@@ -198,6 +198,13 @@ func RenderAll(bundle *skill.Bundle, outDir string, targets []Target, meta ...Re
 }
 
 func writeRendered(root, dst string, item Rendered, target Target) error {
+	// Preserve the install-safety marker across re-renders (symlink-mode
+	// installs share this directory as the symlink target, so wiping it
+	// permanently bricks uninstall/reinstall — see #65).
+	var marker []byte
+	if data, err := os.ReadFile(filepath.Join(dst, ".symskills.json")); err == nil {
+		marker = data
+	}
 	if err := os.RemoveAll(dst); err != nil {
 		return err
 	}
@@ -209,6 +216,11 @@ func writeRendered(root, dst string, item Rendered, target Target) error {
 	}
 	if target == TargetCodex {
 		if err := writeCodexMetadata(dst, item); err != nil {
+			return err
+		}
+	}
+	if marker != nil {
+		if err := os.WriteFile(filepath.Join(dst, ".symskills.json"), marker, 0o644); err != nil {
 			return err
 		}
 	}

@@ -125,6 +125,29 @@ func TestDiffReportsChangedFiles(t *testing.T) {
 	}
 }
 
+func TestDiffSymlinkTargetDoesNotCrash(t *testing.T) {
+	// Regression test for #64: diff must follow symlinks to the
+	// actual render-cache directory (the default symlink install mode).
+	tmp := t.TempDir()
+	rendered := filepath.Join(tmp, "rendered")
+	writeFile(t, filepath.Join(rendered, "SKILL.md"), "new content")
+	writeFile(t, filepath.Join(rendered, "notes.md"), "notes")
+
+	// Simulate a symlink-mode install: installed is a symlink to rendered.
+	installed := filepath.Join(tmp, "installed-link")
+	if err := os.Symlink(rendered, installed); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	changes, err := Diff(rendered, installed)
+	if err != nil {
+		t.Fatalf("Diff through symlink: %v", err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("expected no changes (identical trees), got %#v", changes)
+	}
+}
+
 func TestInstallPathRejectsHostileNames(t *testing.T) {
 	hostile := []string{"../evil", "evil/name", "/etc/evil", ".."}
 	for _, name := range hostile {
