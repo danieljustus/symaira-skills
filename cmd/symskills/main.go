@@ -218,9 +218,22 @@ func isSkillDir(dir string) bool {
 	return err == nil
 }
 
-func resolveSkillDir(args []string, requiredMsg string) (string, error) {
+func resolveSkillDir(args []string, requiredMsg string, libraryDir string) (string, error) {
 	if len(args) == 1 {
-		return args[0], nil
+		dir := args[0]
+		if isSkillDir(dir) {
+			return dir, nil
+		}
+		if libraryDir != "" {
+			libPath := filepath.Join(libraryDir, dir)
+			if isSkillDir(libPath) {
+				return libPath, nil
+			}
+		}
+		if libraryDir != "" {
+			return "", fmt.Errorf("skill %q not found locally at %q nor in library at %q", dir, dir, filepath.Join(libraryDir, dir))
+		}
+		return "", fmt.Errorf("skill %q not found locally at %q", dir, dir)
 	}
 	if isSkillDir(".") {
 		return ".", nil
@@ -235,7 +248,11 @@ func newInspectCmd() *cobra.Command {
 		Short: "Inspect a skill directory",
 		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dir, err := resolveSkillDir(args, "skill-dir is required")
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			dir, err := resolveSkillDir(args, "skill-dir is required", cfg.LibraryDir)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "inspect skill")
 			}
@@ -261,7 +278,11 @@ func newValidateCmd() *cobra.Command {
 		Short: "Validate a skill directory",
 		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dir, err := resolveSkillDir(args, "skill-dir is required")
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			dir, err := resolveSkillDir(args, "skill-dir is required", cfg.LibraryDir)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "load skill")
 			}
@@ -316,7 +337,7 @@ func newRenderCmd() *cobra.Command {
 				}
 				return renderProfile(cmd, cfg, output, targets, profileName, jsonOut)
 			}
-			dir, err := resolveSkillDir(args, "skill-dir is required without --profile")
+			dir, err := resolveSkillDir(args, "skill-dir is required without --profile", cfg.LibraryDir)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "render skill")
 			}
@@ -388,7 +409,7 @@ func newDiffCmd() *cobra.Command {
 			if output == "" {
 				output = cfg.RenderDir
 			}
-			dir, err := resolveSkillDir(args, "skill-dir is required")
+			dir, err := resolveSkillDir(args, "skill-dir is required", cfg.LibraryDir)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "diff skill")
 			}
@@ -456,7 +477,7 @@ func newInstallCmd() *cobra.Command {
 				}
 				return installProfile(cmd, cfg, output, target, profileName, opts, jsonOut)
 			}
-			dir, err := resolveSkillDir(args, "skill-dir is required without --profile")
+			dir, err := resolveSkillDir(args, "skill-dir is required without --profile", cfg.LibraryDir)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "install skill")
 			}
