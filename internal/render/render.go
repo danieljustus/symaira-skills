@@ -29,6 +29,7 @@ var DefaultTargets = []Target{TargetOpenCode, TargetClaude, TargetCodex, TargetH
 type RenderMeta struct {
 	Source  string
 	Profile string
+	Alias   string // profile alias overrides TargetConfig.Alias
 }
 
 type Rendered struct {
@@ -76,7 +77,14 @@ func RenderTarget(bundle *skill.Bundle, target Target, meta ...RenderMeta) (Rend
 	}
 	fm.Metadata = metadata
 	fm.Compatibility = string(target)
-	if cfg.Alias != "" {
+	// Alias precedence: profile alias (RenderMeta) > target config alias > manifest name.
+	var profileAlias string
+	if len(meta) > 0 {
+		profileAlias = meta[0].Alias
+	}
+	if profileAlias != "" {
+		fm.Name = profileAlias
+	} else if cfg.Alias != "" {
 		fm.Name = cfg.Alias
 	} else if bundle.Manifest.Skill.Name != "" {
 		fm.Name = bundle.Manifest.Skill.Name
