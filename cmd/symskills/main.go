@@ -394,7 +394,7 @@ func renderProfile(cmd *cobra.Command, cfg *config.Config, output string, target
 }
 
 func newDiffCmd() *cobra.Command {
-	var targetName, output string
+	var targetName string
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "diff [skill-dir]",
@@ -409,10 +409,14 @@ func newDiffCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			out := output
-			if out == "" {
-				out = cfg.RenderDir
+			// Render to a temp directory so diff never touches the
+			// real render cache or a symlinked install target (#86).
+			tempDir, err := os.MkdirTemp("", "symskills-diff-")
+			if err != nil {
+				return err
 			}
+			defer os.RemoveAll(tempDir)
+
 			dir, err := resolveSkillDir(args, "skill-dir is required", cfg.LibraryDir)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "diff skill")
@@ -421,7 +425,7 @@ func newDiffCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rendered, errs := render.RenderAll(bundle, out, []render.Target{target})
+			rendered, errs := render.RenderAll(bundle, tempDir, []render.Target{target})
 			if len(rendered) == 0 {
 				if len(errs) > 0 {
 					return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
@@ -444,13 +448,12 @@ func newDiffCmd() *cobra.Command {
 				return nil
 			}
 			for _, change := range changes {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", change.Status, change.Path)
+				fmt.Fprintf(cmd.OutOrStdout(), "%s	%s\n", change.Status, change.Path)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&targetName, "target", string(render.TargetOpenCode), "Target harness")
-	cmd.Flags().StringVarP(&output, "output", "o", "", "Render output directory")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	return cmd
 }

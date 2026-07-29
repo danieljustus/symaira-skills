@@ -2,6 +2,9 @@
 package render
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -224,14 +227,75 @@ func RenderAll(bundle *skill.Bundle, outDir string, targets []Target, meta ...Re
 	return rendered, errs
 }
 
+// sourceHash computes a content hash of the source tree plus rendered output
+// so re-renders with unchanged input can be skipped.
+func sourceHash(bundleRoot, renderedSkillMD string, target Target) string {
+	h := sha256.New()
+	// Walk all files in the source tree, hashing support files (excluding
+	// SKILL.md and symskills.toml which are part of the rendered body).
+	_ = filepath.WalkDir(bundleRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" || d.Name() == "overlays" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(bundleRoot, path)
+		if err != nil {
+			return err
+		}
+		if rel == "SKILL.md" || rel == "symskills.toml" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		h.Write([]byte(rel))
+		h.Write([]byte{0})
+		h.Write(data)
+		h.Write([]byte{0})
+		return nil
+	})
+	// Include the rendered SKILL.md content and the target in the hash.
+	h.Write([]byte(renderedSkillMD))
+	h.Write([]byte{0})
+	h.Write([]byte(target))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 func writeRendered(root, dst string, item Rendered, target Target) error {
-	// Preserve the install-safety marker across re-renders (symlink-mode
-	// installs share this directory as the symlink target, so wiping it
-	// permanently bricks uninstall/reinstall — see #65).
-	var marker []byte
-	if data, err := os.ReadFile(filepath.Join(dst, ".symskills.json")); err == nil {
-		marker = data
+	sh := sourceHash(root, item.SkillMD, target)
+
+	// Read any existing marker so we can preserve install-time fields and
+	// check whether the output is already current.
+	markerPath := filepath.Join(dst, ".symskills.json")
+	var existingMarker map[string]interface{}
+	if data, err := os.ReadFile(markerPath); err == nil {
+		_ = json.Unmarshal(data, &existingMarker)
 	}
+
+	// Skip the rewrite when the source hasn't changed.
+	if existingMarker != nil {
+		if storedHash, ok := existingMarker["source_hash"].(string); ok && storedHash == sh {
+			return nil
+		}
+	}
+
+	// Build the updated marker, preserving any pre-existing fields.
+	if existingMarker == nil {
+		existingMarker = make(map[string]interface{})
+	}
+	existingMarker["source_hash"] = sh
+	markerBytes, err := json.MarshalIndent(existingMarker, "", "  ")
+	if err != nil {
+		return err
+	}
+	markerBytes = append(markerBytes, '\n')
+
 	if err := os.RemoveAll(dst); err != nil {
 		return err
 	}
@@ -246,10 +310,8 @@ func writeRendered(root, dst string, item Rendered, target Target) error {
 			return err
 		}
 	}
-	if marker != nil {
-		if err := os.WriteFile(filepath.Join(dst, ".symskills.json"), marker, 0o644); err != nil {
-			return err
-		}
+	if err := os.WriteFile(markerPath, markerBytes, 0o644); err != nil {
+		return err
 	}
 	return nil
 }

@@ -1120,3 +1120,147 @@ func TestUninstallNotInstalledReportsNothingToDo(t *testing.T) {
 		t.Errorf("expected removed:true after real uninstall, got: %s", stdout)
 	}
 }
+
+// --- Tests for #86: diff must not destructively re-render ---
+
+func TestDiffLeavesRenderDirIntact(t *testing.T) {
+	// Running diff must not modify the render directory, even when a
+	// symlink install points at it (#86).
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "diff-safe", "For testing diff safety")
+
+	// Do a render first so the render cache is populated.
+	stdout, stderr, err := runCmd(t, home, "render", "--target", "opencode", skillDir)
+	if err != nil {
+		t.Fatalf("render failed: %v, stderr: %s", err, stderr)
+	}
+	_ = stdout
+
+	// Find the rendered output path.
+	renderDir := filepath.Join(home, ".local", "share", "symskills", "rendered", "opencode", "diff-safe")
+
+	// Verify render output exists.
+	if _, err := os.Stat(filepath.Join(renderDir, "SKILL.md")); os.IsNotExist(err) {
+		t.Fatalf("render output not found at %s", renderDir)
+	}
+
+	// Snapshot the render directory before diff.
+	beforeFiles := listDirFiles(t, renderDir)
+
+	// Run diff — this used to call RenderAll on the render dir directly,
+	// which would do RemoveAll + re-copy. Now it uses a temp dir.
+	stdout, stderr, err = runCmd(t, home, "diff", "--target", "opencode", skillDir)
+	if err != nil {
+		t.Fatalf("diff failed: %v, stderr: %s", err, stderr)
+	}
+
+	// Verify the render directory is byte-identical after diff.
+	afterFiles := listDirFiles(t, renderDir)
+	if len(beforeFiles) != len(afterFiles) {
+		t.Fatalf("render dir file count changed: %d -> %d", len(beforeFiles), len(afterFiles))
+	}
+	for path, beforeHash := range beforeFiles {
+		afterHash, ok := afterFiles[path]
+		if !ok {
+			t.Fatalf("file %q disappeared from render dir after diff", path)
+		}
+		if beforeHash != afterHash {
+			t.Fatalf("file %q was modified by diff: hash changed", path)
+		}
+	}
+}
+
+func TestDiffWithSymlinkInstallDoesNotDeleteTarget(t *testing.T) {
+	// Install via symlink, then run diff — the symlink target (render dir)
+	// must not be deleted (#86).
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "diff-symlink", "Symlink diff safety test")
+
+	// Install with symlink mode (default).
+	stdout, stderr, err := runCmd(t, home, "install", "--target", "opencode", "--mode", "symlink", skillDir)
+	if err != nil {
+		t.Fatalf("install failed: %v, stderr: %s", err, stderr)
+	}
+	_ = stdout
+
+	// The installed path should be a symlink.
+	installPath := filepath.Join(home, ".config", "opencode", "skills", "diff-symlink")
+	fi, err := os.Lstat(installPath)
+	if err != nil {
+		t.Fatalf("lstat install path: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("install path is not a symlink")
+	}
+
+	// Resolve the symlink to find the render dir.
+	renderDir, err := os.Readlink(installPath)
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if !filepath.IsAbs(renderDir) {
+		renderDir = filepath.Join(filepath.Dir(installPath), renderDir)
+	}
+
+	// Snapshot the render dir.
+	beforeFiles := listDirFiles(t, renderDir)
+
+	// Run diff.
+	stdout, stderr, err = runCmd(t, home, "diff", "--target", "opencode", skillDir)
+	if err != nil {
+		t.Fatalf("diff failed: %v, stderr: %s", err, stderr)
+	}
+
+	// Symlink must still exist and point to an existing directory.
+	if _, err := os.Stat(installPath); err != nil {
+		t.Fatalf("install symlink broken after diff: %v", err)
+	}
+	if _, err := os.Stat(renderDir); err != nil {
+		t.Fatalf("render dir (symlink target) missing after diff: %v", err)
+	}
+
+	// Render dir must be intact.
+	afterFiles := listDirFiles(t, renderDir)
+	for path, beforeHash := range beforeFiles {
+		afterHash, ok := afterFiles[path]
+		if !ok {
+			t.Fatalf("file %q disappeared from render dir after diff", path)
+		}
+		if beforeHash != afterHash {
+			t.Fatalf("file %q was modified by diff: hash changed", path)
+		}
+	}
+}
+
+func listDirFiles(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		out[rel] = string(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walkDir %s: %v", dir, err)
+	}
+	return out
+}
