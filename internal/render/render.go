@@ -46,6 +46,18 @@ func RenderTarget(bundle *skill.Bundle, target Target, meta ...RenderMeta) (Rend
 	if bundle == nil {
 		return Rendered{}, fmt.Errorf("bundle is nil")
 	}
+
+	// Reject bundles that have error-severity overlay reference issues.
+	// This catches path traversal in prepend/append before any file is
+	// read or written (#80).  Other validation problems (missing
+	// description, empty body, etc.) are reported by `skills_validate`
+	// but do not block rendering here.
+	for _, issue := range skill.Validate(bundle) {
+		if issue.Severity == "error" && issue.Code == "overlay_reference_missing" {
+			return Rendered{}, fmt.Errorf("validation error: %s", issue.Message)
+		}
+	}
+
 	cfg, hasCfg := bundle.Manifest.Targets[string(target)]
 	if hasCfg && !cfg.Enabled {
 		return Rendered{}, fmt.Errorf("target %s is disabled", target)
@@ -117,7 +129,14 @@ func renderBody(bundle *skill.Bundle, target Target, cfg skill.TargetConfig) (st
 
 func overlayText(root string, target Target, defaultName, configured string) (string, error) {
 	if configured != "" {
-		return readOptional(filepath.Join(root, configured))
+		if filepath.IsAbs(configured) {
+			return "", fmt.Errorf("overlay reference %q must be relative", configured)
+		}
+		clean := filepath.Clean(configured)
+		if strings.HasPrefix(clean, ".."+string(filepath.Separator)) || clean == ".." {
+			return "", fmt.Errorf("overlay reference %q escapes skill root", configured)
+		}
+		return readOptional(filepath.Join(root, clean))
 	}
 	return readOptional(filepath.Join(root, "overlays", string(target), defaultName))
 }

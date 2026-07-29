@@ -366,3 +366,126 @@ func TestWriteRenderedPreservesInstallMarker(t *testing.T) {
 		t.Fatalf("marker content changed: got %q", string(data))
 	}
 }
+
+// --- Regression tests for #80: overlay path traversal hardening ---
+
+func TestRenderTargetRejectsTraversalOverlayPrepend(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: traversal-prepend
+description: Test traversal in prepend.
+---
+Body.
+`)
+	writeFile(t, filepath.Join(root, "symskills.toml"), `[skill]
+name = "traversal-prepend"
+
+[targets.opencode]
+enabled = true
+prepend = "../../evil.md"
+`)
+
+	bundle, err := skill.LoadBundle(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = RenderTarget(bundle, TargetOpenCode)
+	if err == nil {
+		t.Fatal("expected error for traversal prepend, got nil")
+	}
+	if !strings.Contains(err.Error(), "escapes") && !strings.Contains(err.Error(), "must be relative") {
+		t.Fatalf("expected containment error, got: %v", err)
+	}
+}
+
+func TestRenderTargetRejectsTraversalOverlayAppend(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: traversal-append
+description: Test traversal in append.
+---
+Body.
+`)
+	writeFile(t, filepath.Join(root, "symskills.toml"), `[skill]
+name = "traversal-append"
+
+[targets.opencode]
+enabled = true
+append = "../evil.md"
+`)
+
+	bundle, err := skill.LoadBundle(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = RenderTarget(bundle, TargetOpenCode)
+	if err == nil {
+		t.Fatal("expected error for traversal append, got nil")
+	}
+	if !strings.Contains(err.Error(), "escapes") && !strings.Contains(err.Error(), "must be relative") {
+		t.Fatalf("expected containment error, got: %v", err)
+	}
+}
+
+func TestRenderTargetRejectsAbsoluteOverlayPrepend(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: absolute-prepend
+description: Test absolute path in prepend.
+---
+Body.
+`)
+	writeFile(t, filepath.Join(root, "symskills.toml"), `[skill]
+name = "absolute-prepend"
+
+[targets.opencode]
+enabled = true
+prepend = "/etc/passwd"
+`)
+
+	bundle, err := skill.LoadBundle(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = RenderTarget(bundle, TargetOpenCode)
+	if err == nil {
+		t.Fatal("expected error for absolute prepend, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be relative") {
+		t.Fatalf("expected 'must be relative' error, got: %v", err)
+	}
+}
+
+func TestRenderTargetAcceptsValidConfiguredOverlay(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: valid-configured
+description: Valid configured overlay.
+---
+Base body.
+`)
+	writeFile(t, filepath.Join(root, "custom-prepend.md"), "## Custom Prepend\n\nExtra content.\n")
+	writeFile(t, filepath.Join(root, "symskills.toml"), `[skill]
+name = "valid-configured"
+
+[targets.opencode]
+enabled = true
+prepend = "custom-prepend.md"
+`)
+
+	bundle, err := skill.LoadBundle(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rendered, err := RenderTarget(bundle, TargetOpenCode)
+	if err != nil {
+		t.Fatalf("expected valid overlay to succeed, got: %v", err)
+	}
+	if !strings.Contains(rendered.SkillMD, "## Custom Prepend") {
+		t.Fatalf("expected custom prepend in output, got:\n%s", rendered.SkillMD)
+	}
+}
