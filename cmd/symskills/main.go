@@ -116,12 +116,13 @@ skill, it falls back to single-skill import.`,
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindConfig, "load config")
 			}
-			if library == "" {
-				library = cfg.LibraryDir
+			lib := library
+			if lib == "" {
+				lib = cfg.LibraryDir
 			}
 
 			if batch {
-				results := skill.ImportSkills(args[0], library)
+				results := skill.ImportSkills(args[0], lib)
 				if jsonOut {
 					return printJSON(cmd, results)
 				}
@@ -143,7 +144,7 @@ skill, it falls back to single-skill import.`,
 				return nil
 			}
 
-			result, err := skill.ImportSkill(args[0], library)
+			result, err := skill.ImportSkill(args[0], lib)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "import skill")
 			}
@@ -172,10 +173,11 @@ func newListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if library == "" {
-				library = cfg.LibraryDir
+			lib := library
+			if lib == "" {
+				lib = cfg.LibraryDir
 			}
-			bundles, issues := skill.ListLibrary(library)
+			bundles, issues := skill.ListLibrary(lib)
 			if issues == nil {
 				issues = []skill.Issue{}
 			}
@@ -324,8 +326,9 @@ func newRenderCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if output == "" {
-				output = cfg.RenderDir
+			out := output
+			if out == "" {
+				out = cfg.RenderDir
 			}
 			targets, err := targetsFromFlag(targetName)
 			if err != nil {
@@ -335,7 +338,7 @@ func newRenderCmd() *cobra.Command {
 				if len(args) > 0 {
 					return exitcodes.Wrap(fmt.Errorf("skill-dir is not used with --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "render profile")
 				}
-				return renderProfile(cmd, cfg, output, targets, profileName, jsonOut)
+				return renderProfile(cmd, cfg, out, targets, profileName, jsonOut)
 			}
 			dir, err := resolveSkillDir(args, "skill-dir is required without --profile", cfg.LibraryDir)
 			if err != nil {
@@ -345,7 +348,7 @@ func newRenderCmd() *cobra.Command {
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "load skill")
 			}
-			results, errs := render.RenderAll(bundle, output, targets)
+			results, errs := render.RenderAll(bundle, out, targets)
 			if len(errs) > 0 {
 				return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render skill")
 			}
@@ -406,8 +409,9 @@ func newDiffCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if output == "" {
-				output = cfg.RenderDir
+			out := output
+			if out == "" {
+				out = cfg.RenderDir
 			}
 			dir, err := resolveSkillDir(args, "skill-dir is required", cfg.LibraryDir)
 			if err != nil {
@@ -417,7 +421,7 @@ func newDiffCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rendered, errs := render.RenderAll(bundle, output, []render.Target{target})
+			rendered, errs := render.RenderAll(bundle, out, []render.Target{target})
 			if len(rendered) == 0 {
 				if len(errs) > 0 {
 					return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
@@ -467,15 +471,16 @@ func newInstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if output == "" {
-				output = cfg.RenderDir
+			out := output
+			if out == "" {
+				out = cfg.RenderDir
 			}
 			opts := install.Options{Scope: install.Scope(scopeName), Mode: install.Mode(modeName), DryRun: dryRun}
 			if profileName != "" {
 				if len(args) > 0 {
 					return exitcodes.Wrap(fmt.Errorf("skill-dir is not used with --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "install profile")
 				}
-				return installProfile(cmd, cfg, output, target, profileName, opts, jsonOut)
+				return installProfile(cmd, cfg, out, target, profileName, opts, jsonOut)
 			}
 			dir, err := resolveSkillDir(args, "skill-dir is required without --profile", cfg.LibraryDir)
 			if err != nil {
@@ -485,7 +490,7 @@ func newInstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rendered, errs := render.RenderAll(bundle, output, []render.Target{target})
+			rendered, errs := render.RenderAll(bundle, out, []render.Target{target})
 			if len(rendered) == 0 {
 				if len(errs) > 0 {
 					return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
