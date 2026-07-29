@@ -659,7 +659,7 @@ func newProfileValidateCmd() *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "validate <profile-name>",
-		Short: "Validate a profile's structure and link targets",
+		Short: "Validate a profile's structure and linked skill bundles",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
@@ -670,18 +670,44 @@ func newProfileValidateCmd() *cobra.Command {
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "validate profile")
 			}
-			allIssues := append([]skill.Issue{}, issues...)
-			_ = resolved
-			result := map[string]any{"valid": len(allIssues) == 0, "issues": allIssues}
+
+			// Validate each linked skill bundle
+			for _, rs := range resolved {
+				if rs.Skill == "" {
+					continue
+				}
+				skillPath := filepath.Join(cfg.LibraryDir, rs.Skill)
+				bundle, err := skill.LoadBundle(skillPath)
+				if err != nil {
+					issues = append(issues, skill.Issue{
+						Code:     "profile_invalid_bundle",
+						Severity: "error",
+						Message:  fmt.Sprintf("profile %q links skill %q: %v", args[0], rs.Skill, err),
+						Path:     rs.Name,
+					})
+					continue
+				}
+				bundleIssues := skill.Validate(bundle)
+				for _, bi := range bundleIssues {
+					issues = append(issues, skill.Issue{
+						Code:     bi.Code,
+						Severity: bi.Severity,
+						Message:  fmt.Sprintf("profile %q links skill %q: %s", args[0], rs.Skill, bi.Message),
+						Path:     rs.Name,
+					})
+				}
+			}
+
+			result := map[string]any{"valid": len(issues) == 0, "issues": issues}
 			if jsonOut {
 				return printJSON(cmd, result)
 			}
-			if len(allIssues) == 0 {
+			if len(issues) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "valid")
 				return nil
 			}
-			for _, issue := range allIssues {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", issue.Severity, issue.Code, issue.Message)
+			for _, issue := range issues {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s	%s	%s\n", issue.Severity, issue.Code, issue.Message)
 			}
 			return exitcodes.Wrap(fmt.Errorf("validation failed"), exitcodes.ExitData, exitcodes.KindValidation, "validate profile")
 		},
