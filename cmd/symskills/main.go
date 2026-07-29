@@ -116,12 +116,13 @@ skill, it falls back to single-skill import.`,
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindConfig, "load config")
 			}
-			if library == "" {
-				library = cfg.LibraryDir
+			lib := library
+			if lib == "" {
+				lib = cfg.LibraryDir
 			}
 
 			if batch {
-				results := skill.ImportSkills(args[0], library)
+				results := skill.ImportSkills(args[0], lib)
 				if jsonOut {
 					return printJSON(cmd, results)
 				}
@@ -143,7 +144,7 @@ skill, it falls back to single-skill import.`,
 				return nil
 			}
 
-			result, err := skill.ImportSkill(args[0], library)
+			result, err := skill.ImportSkill(args[0], lib)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "import skill")
 			}
@@ -172,10 +173,11 @@ func newListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if library == "" {
-				library = cfg.LibraryDir
+			lib := library
+			if lib == "" {
+				lib = cfg.LibraryDir
 			}
-			bundles, issues := skill.ListLibrary(library)
+			bundles, issues := skill.ListLibrary(lib)
 			if issues == nil {
 				issues = []skill.Issue{}
 			}
@@ -218,9 +220,22 @@ func isSkillDir(dir string) bool {
 	return err == nil
 }
 
-func resolveSkillDir(args []string, requiredMsg string) (string, error) {
+func resolveSkillDir(args []string, requiredMsg string, libraryDir string) (string, error) {
 	if len(args) == 1 {
-		return args[0], nil
+		dir := args[0]
+		if isSkillDir(dir) {
+			return dir, nil
+		}
+		if libraryDir != "" {
+			libPath := filepath.Join(libraryDir, dir)
+			if isSkillDir(libPath) {
+				return libPath, nil
+			}
+		}
+		if libraryDir != "" {
+			return "", fmt.Errorf("skill %q not found locally at %q nor in library at %q", dir, dir, filepath.Join(libraryDir, dir))
+		}
+		return "", fmt.Errorf("skill %q not found locally at %q", dir, dir)
 	}
 	if isSkillDir(".") {
 		return ".", nil
@@ -235,7 +250,11 @@ func newInspectCmd() *cobra.Command {
 		Short: "Inspect a skill directory",
 		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dir, err := resolveSkillDir(args, "skill-dir is required")
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			dir, err := resolveSkillDir(args, "skill-dir is required", cfg.LibraryDir)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "inspect skill")
 			}
@@ -261,7 +280,11 @@ func newValidateCmd() *cobra.Command {
 		Short: "Validate a skill directory",
 		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dir, err := resolveSkillDir(args, "skill-dir is required")
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			dir, err := resolveSkillDir(args, "skill-dir is required", cfg.LibraryDir)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "load skill")
 			}
@@ -303,8 +326,9 @@ func newRenderCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if output == "" {
-				output = cfg.RenderDir
+			out := output
+			if out == "" {
+				out = cfg.RenderDir
 			}
 			targets, err := targetsFromFlag(targetName)
 			if err != nil {
@@ -314,9 +338,9 @@ func newRenderCmd() *cobra.Command {
 				if len(args) > 0 {
 					return exitcodes.Wrap(fmt.Errorf("skill-dir is not used with --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "render profile")
 				}
-				return renderProfile(cmd, cfg, output, targets, profileName, jsonOut)
+				return renderProfile(cmd, cfg, out, targets, profileName, jsonOut)
 			}
-			dir, err := resolveSkillDir(args, "skill-dir is required without --profile")
+			dir, err := resolveSkillDir(args, "skill-dir is required without --profile", cfg.LibraryDir)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "render skill")
 			}
@@ -324,7 +348,7 @@ func newRenderCmd() *cobra.Command {
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "load skill")
 			}
-			results, errs := render.RenderAll(bundle, output, targets)
+			results, errs := render.RenderAll(bundle, out, targets)
 			if len(errs) > 0 {
 				return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render skill")
 			}
@@ -385,10 +409,11 @@ func newDiffCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if output == "" {
-				output = cfg.RenderDir
+			out := output
+			if out == "" {
+				out = cfg.RenderDir
 			}
-			dir, err := resolveSkillDir(args, "skill-dir is required")
+			dir, err := resolveSkillDir(args, "skill-dir is required", cfg.LibraryDir)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "diff skill")
 			}
@@ -396,7 +421,7 @@ func newDiffCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rendered, errs := render.RenderAll(bundle, output, []render.Target{target})
+			rendered, errs := render.RenderAll(bundle, out, []render.Target{target})
 			if len(rendered) == 0 {
 				if len(errs) > 0 {
 					return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
@@ -446,17 +471,18 @@ func newInstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if output == "" {
-				output = cfg.RenderDir
+			out := output
+			if out == "" {
+				out = cfg.RenderDir
 			}
 			opts := install.Options{Scope: install.Scope(scopeName), Mode: install.Mode(modeName), DryRun: dryRun}
 			if profileName != "" {
 				if len(args) > 0 {
 					return exitcodes.Wrap(fmt.Errorf("skill-dir is not used with --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "install profile")
 				}
-				return installProfile(cmd, cfg, output, target, profileName, opts, jsonOut)
+				return installProfile(cmd, cfg, out, target, profileName, opts, jsonOut)
 			}
-			dir, err := resolveSkillDir(args, "skill-dir is required without --profile")
+			dir, err := resolveSkillDir(args, "skill-dir is required without --profile", cfg.LibraryDir)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "install skill")
 			}
@@ -464,7 +490,7 @@ func newInstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rendered, errs := render.RenderAll(bundle, output, []render.Target{target})
+			rendered, errs := render.RenderAll(bundle, out, []render.Target{target})
 			if len(rendered) == 0 {
 				if len(errs) > 0 {
 					return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
@@ -633,7 +659,7 @@ func newProfileValidateCmd() *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "validate <profile-name>",
-		Short: "Validate a profile's structure and link targets",
+		Short: "Validate a profile's structure and linked skill bundles",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
@@ -644,18 +670,44 @@ func newProfileValidateCmd() *cobra.Command {
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "validate profile")
 			}
-			allIssues := append([]skill.Issue{}, issues...)
-			_ = resolved
-			result := map[string]any{"valid": len(allIssues) == 0, "issues": allIssues}
+
+			// Validate each linked skill bundle
+			for _, rs := range resolved {
+				if rs.Skill == "" {
+					continue
+				}
+				skillPath := filepath.Join(cfg.LibraryDir, rs.Skill)
+				bundle, err := skill.LoadBundle(skillPath)
+				if err != nil {
+					issues = append(issues, skill.Issue{
+						Code:     "profile_invalid_bundle",
+						Severity: "error",
+						Message:  fmt.Sprintf("profile %q links skill %q: %v", args[0], rs.Skill, err),
+						Path:     rs.Name,
+					})
+					continue
+				}
+				bundleIssues := skill.Validate(bundle)
+				for _, bi := range bundleIssues {
+					issues = append(issues, skill.Issue{
+						Code:     bi.Code,
+						Severity: bi.Severity,
+						Message:  fmt.Sprintf("profile %q links skill %q: %s", args[0], rs.Skill, bi.Message),
+						Path:     rs.Name,
+					})
+				}
+			}
+
+			result := map[string]any{"valid": len(issues) == 0, "issues": issues}
 			if jsonOut {
 				return printJSON(cmd, result)
 			}
-			if len(allIssues) == 0 {
+			if len(issues) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "valid")
 				return nil
 			}
-			for _, issue := range allIssues {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", issue.Severity, issue.Code, issue.Message)
+			for _, issue := range issues {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s	%s	%s\n", issue.Severity, issue.Code, issue.Message)
 			}
 			return exitcodes.Wrap(fmt.Errorf("validation failed"), exitcodes.ExitData, exitcodes.KindValidation, "validate profile")
 		},
