@@ -63,6 +63,7 @@ type Marker struct {
 	RenderedAt string        `json:"rendered_at"`
 	Mode       Mode          `json:"mode"`
 	Installed  string        `json:"installed"`
+	SourceHash string        `json:"source_hash,omitempty"`
 }
 
 type Change struct {
@@ -141,14 +142,27 @@ func ensureManagedOrAbsent(path string) error {
 }
 
 func markerBytes(item RenderedSkill, mode Mode) []byte {
-	data, _ := json.MarshalIndent(Marker{
+	// Preserve source_hash from any existing marker so the render-cache
+	// freshness check survives install (#87).
+	var srcHash string
+	if data, err := os.ReadFile(filepath.Join(item.Path, markerFile)); err == nil {
+		var existing struct {
+			SourceHash string `json:"source_hash,omitempty"`
+		}
+		if json.Unmarshal(data, &existing) == nil {
+			srcHash = existing.SourceHash
+		}
+	}
+	m := Marker{
 		ManagedBy:  "symskills",
 		Target:     item.Target,
 		Name:       item.Name,
 		RenderedAt: item.Path,
 		Mode:       mode,
 		Installed:  time.Now().UTC().Format(time.RFC3339),
-	}, "", "  ")
+		SourceHash: srcHash,
+	}
+	data, _ := json.MarshalIndent(m, "", "  ")
 	return append(data, '\n')
 }
 
