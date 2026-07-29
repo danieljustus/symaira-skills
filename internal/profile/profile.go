@@ -134,7 +134,7 @@ func RenderProfile(libraryDir, profilesDir, projectDir, output string, targets [
 			errs = append(errs, fmt.Errorf("profile link %q: %w", rs.Name, err))
 			continue
 		}
-		rendered, renderErrs := render.RenderAll(bundle, output, targets, render.RenderMeta{Source: rs.Source, Profile: rs.Profile})
+		rendered, renderErrs := render.RenderAll(bundle, output, targets, render.RenderMeta{Source: rs.Source, Profile: rs.Profile, Alias: rs.Alias})
 		if len(renderErrs) > 0 {
 			errs = append(errs, renderErrs...)
 			continue
@@ -161,7 +161,7 @@ func InstallProfile(libraryDir, profilesDir, projectDir, output string, target r
 			errs = append(errs, fmt.Errorf("profile link %q: %w", rs.Name, err))
 			continue
 		}
-		rendered, renderErrs := render.RenderAll(bundle, output, []render.Target{target}, render.RenderMeta{Source: rs.Source, Profile: rs.Profile})
+		rendered, renderErrs := render.RenderAll(bundle, output, []render.Target{target}, render.RenderMeta{Source: rs.Source, Profile: rs.Profile, Alias: rs.Alias})
 		if len(renderErrs) > 0 {
 			errs = append(errs, renderErrs...)
 			continue

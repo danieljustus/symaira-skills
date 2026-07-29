@@ -243,6 +243,134 @@ enabled = false
 	}
 }
 
+// --- Tests for #82: profile alias rendering ---
+
+func TestRenderTargetProfileAliasOverridesTargetConfigAlias(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: my-skill
+description: Test skill.
+---
+# Body
+`)
+	writeFile(t, filepath.Join(root, "symskills.toml"), `[skill]
+name = "my-skill"
+version = "0.1.0"
+
+[targets.opencode]
+enabled = true
+alias = "target-alias"
+`)
+
+	bundle, err := skill.LoadBundle(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Profile alias wins over target config alias.
+	rendered, err := RenderTarget(bundle, TargetOpenCode, RenderMeta{Alias: "profile-override"})
+	if err != nil {
+		t.Fatalf("RenderTarget: %v", err)
+	}
+	if rendered.Name != "profile-override" {
+		t.Fatalf("rendered name: want profile-override, got %q", rendered.Name)
+	}
+}
+
+func TestRenderTargetProfileAliasFallsBackToTargetConfig(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: my-skill
+description: Fallback test.
+---
+# Body
+`)
+	writeFile(t, filepath.Join(root, "symskills.toml"), `[skill]
+name = "my-skill"
+version = "0.1.0"
+
+[targets.opencode]
+enabled = true
+alias = "target-alias"
+`)
+
+	bundle, err := skill.LoadBundle(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Without profile alias, target config alias is used.
+	rendered, err := RenderTarget(bundle, TargetOpenCode, RenderMeta{Source: "project", Profile: "default"})
+	if err != nil {
+		t.Fatalf("RenderTarget: %v", err)
+	}
+	if rendered.Name != "target-alias" {
+		t.Fatalf("rendered name: want target-alias, got %q", rendered.Name)
+	}
+}
+
+func TestRenderTargetInvalidProfileAliasFailsValidation(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: my-skill
+description: Invalid alias test.
+---
+# Body
+`)
+	writeFile(t, filepath.Join(root, "symskills.toml"), `[skill]
+name = "my-skill"
+version = "0.1.0"
+
+[targets.opencode]
+enabled = true
+`)
+
+	bundle, err := skill.LoadBundle(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// An invalid profile alias must fail with ValidateSkillName error.
+	_, err = RenderTarget(bundle, TargetOpenCode, RenderMeta{Alias: "../../evil"})
+	if err == nil {
+		t.Fatal("expected error for invalid profile alias")
+	}
+	if !strings.Contains(err.Error(), "invalid resolved name") {
+		t.Fatalf("expected ValidateSkillName error, got: %v", err)
+	}
+}
+
+func TestRenderTargetEmptyProfileAliasNoEffect(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: my-skill
+description: Empty alias test.
+---
+# Body
+`)
+	writeFile(t, filepath.Join(root, "symskills.toml"), `[skill]
+name = "my-skill"
+version = "0.1.0"
+
+[targets.opencode]
+enabled = true
+`)
+
+	bundle, err := skill.LoadBundle(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty profile alias should fall back to manifest name.
+	rendered, err := RenderTarget(bundle, TargetOpenCode, RenderMeta{Alias: ""})
+	if err != nil {
+		t.Fatalf("RenderTarget: %v", err)
+	}
+	if rendered.Name != "my-skill" {
+		t.Fatalf("rendered name: want my-skill, got %q", rendered.Name)
+	}
+}
+
 func TestParseTarget(t *testing.T) {
 	valid := []Target{TargetOpenCode, TargetClaude, TargetCodex, TargetHermes}
 	for _, target := range valid {
