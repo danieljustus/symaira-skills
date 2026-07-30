@@ -1,4 +1,26 @@
 // Package harness provides read-only inventory and readiness status for AI-agent harnesses.
+//
+// VerificationStatus vs. smoke test
+//
+// VerificationStatus reports whether the harness install directory is present
+// and readable from symskills' perspective — it checks the skill root on disk
+// but does NOT confirm the harness runtime can discover and load those skills.
+//
+// The opt-in headless smoke test (scripts/smoke-harness.sh)  goes one step
+// further: it installs a fixture skill into a temp HOME via symskills, then
+// drives each available harness binary headless and asserts the skill was
+// loaded at runtime.  This exercises the end-to-end path that the harness
+// uses to resolve its own skill directory, something that symskills alone
+// cannot verify.
+//
+// Smoke-test results are complementary to the symskills targets command:
+//   - targets status `verified`   ↔ symskills confirms skill root on disk
+//   - smoke-test `PASS`           ↔ harness runtime loaded the installed skill
+//   - smoke-test `SKIP`           ↔ harness binary absent or API key missing
+//   - smoke-test `WARN`           ↔ harness ran but skill name not confirmed
+//
+// The smoke target is wired only into the weekly scheduled CI job; it never
+// runs in the PR gate.
 package harness
 
 import (
@@ -24,7 +46,7 @@ type Status struct {
 	InstallState         string        `json:"install_state"`
 	Capabilities         []string      `json:"capabilities"`
 	SetupHint            string        `json:"setup_hint"`
-	VerificationStatus   string        `json:"verification_status"`
+	VerificationStatus   string        `json:"verification_status"` // "unknown" | "verified" | "not_verified" — see package doc for smoke-test relation
 }
 
 type Options struct {

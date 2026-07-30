@@ -1,6 +1,12 @@
 name: CI
 
 on:
+  schedule:
+    # Monday 06:00 UTC — weekly smoke test of harness binary loading.
+    # The smoke job does not run in the PR gate; it is opt-in and requires
+    # installed harness binaries and API keys which are only expected on
+    # developer workstations, not in CI.
+    - cron: '0 6 * * 1'
   pull_request:
     branches: [main]
     paths-ignore:
@@ -109,3 +115,22 @@ jobs:
         with:
           name: symskills
           path: symskills
+
+  smoke:
+    name: Smoke
+    runs-on: ubuntu-latest
+    # Only runs on the weekly schedule — never in the PR gate.
+    if: github.event_name == 'schedule'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run smoke test
+        run: make smoke
