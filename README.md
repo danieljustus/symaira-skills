@@ -125,6 +125,8 @@ alias = "review" # optional target-specific alias
 | `profile list` | List available context profiles |
 | `profile resolve <profile-name>` | Resolve a profile and print its merged skill set |
 | `profile validate <profile-name>` | Validate a profile's structure and link targets |
+| `targets` | Read-only inventory and readiness status for AI-agent harnesses |
+| `discover [paths...]` | Discover unmanaged skill sources in harness roots or explicit paths |
 | `doctor` | Print config, library, render, and target paths |
 | `serve --stdio` | Serve MCP tools over stdio |
 

@@ -71,7 +71,7 @@ func TestRegisterExposesExpectedTools(t *testing.T) {
 	for _, tool := range resp.Result.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"skills_list", "skills_inspect", "skills_validate", "skills_profile_list", "skills_profile_resolve", "skills_render_plan", "skills_install"} {
+	for _, want := range []string{"skills_list", "skills_inspect", "skills_validate", "skills_profile_list", "skills_profile_resolve", "skills_render_plan", "skills_install", "skills_targets_status", "skills_discover_sources"} {
 		if !names[want] {
 			t.Fatalf("missing MCP tool %s in %#v", want, names)
 		}
@@ -1115,5 +1115,90 @@ func TestSkillsInstallDryRunDoesNotWriteRenderDir(t *testing.T) {
 	}
 	if len(entries) > 0 {
 		t.Errorf("expected empty render dir after dry_run, got %d entries", len(entries))
+	}
+}
+
+func TestSkillsTargetsStatusMCP(t *testing.T) {
+	srv := mcpserver.New("symskills", "test")
+	tmpDir := t.TempDir()
+	Register(srv, Options{HomeDir: tmpDir})
+
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"skills_targets_status","arguments":{}}}` + "\n"
+	var out strings.Builder
+	if err := srv.ServeIO(context.Background(), strings.NewReader(req), &out); err != nil {
+		t.Fatalf("ServeIO: %v", err)
+	}
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Type string          `json:"type"`
+				Text json.RawMessage `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if len(resp.Result.Content) == 0 {
+		t.Fatal("expected content in response")
+	}
+
+	var data struct {
+		Targets []struct {
+			Target string `json:"target"`
+		} `json:"targets"`
+	}
+	if err := parseText(resp.Result.Content[0].Text, &data); err != nil {
+		t.Fatalf("parse text: %v", err)
+	}
+	if len(data.Targets) != 4 {
+		t.Fatalf("expected 4 target statuses, got %d", len(data.Targets))
+	}
+}
+
+func TestSkillsDiscoverSourcesMCP(t *testing.T) {
+	srv := mcpserver.New("symskills", "test")
+	tmpDir := t.TempDir()
+	skillDir := filepath.Join(tmpDir, "disc-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeTestSkill(t, skillDir)
+
+	Register(srv, Options{HomeDir: tmpDir})
+
+	req := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"skills_discover_sources","arguments":{"paths":["%s"]}}}`, skillDir) + "\n"
+	var out strings.Builder
+	if err := srv.ServeIO(context.Background(), strings.NewReader(req), &out); err != nil {
+		t.Fatalf("ServeIO: %v", err)
+	}
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Type string          `json:"type"`
+				Text json.RawMessage `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if len(resp.Result.Content) == 0 {
+		t.Fatal("expected content in response")
+	}
+
+	var data struct {
+		Candidates []struct {
+			SourceID string `json:"source_id"`
+			Location string `json:"location"`
+		} `json:"candidates"`
+	}
+	if err := parseText(resp.Result.Content[0].Text, &data); err != nil {
+		t.Fatalf("parse text: %v", err)
+	}
+	if len(data.Candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(data.Candidates))
 	}
 }
