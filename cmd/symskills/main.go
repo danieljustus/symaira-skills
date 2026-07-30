@@ -17,6 +17,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/danieljustus/symaira-skills/internal/config"
+	"github.com/danieljustus/symaira-skills/internal/discover"
+	"github.com/danieljustus/symaira-skills/internal/harness"
 	"github.com/danieljustus/symaira-skills/internal/install"
 	"github.com/danieljustus/symaira-skills/internal/mcptools"
 	"github.com/danieljustus/symaira-skills/internal/profile"
@@ -53,6 +55,8 @@ func newRootCmd(version string) *cobra.Command {
 		newInstallCmd(),
 		newUninstallCmd(),
 		newProfileCmd(),
+		newTargetsCmd(),
+		newDiscoverCmd(),
 		newDoctorCmd(),
 		newServeCmd(version),
 		newVersionCmd(version),
@@ -821,4 +825,91 @@ func printJSON(cmd *cobra.Command, v any) error {
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
 	return enc.Encode(v)
+}
+
+func newTargetsCmd() *cobra.Command {
+	var jsonOutput bool
+	var scope string
+	cmd := &cobra.Command{
+		Use:   "targets",
+		Short: "Display read-only inventory and readiness status for AI-agent harnesses",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			sc := install.ScopeUser
+			if scope == string(install.ScopeProject) {
+				sc = install.ScopeProject
+			}
+			statuses := harness.ListStatus(harness.Options{
+				Scope: sc,
+			})
+			if jsonOutput {
+				return printJSON(cmd, map[string]any{"targets": statuses})
+			}
+			for _, st := range statuses {
+				fmt.Fprintf(cmd.OutOrStdout(), "Target: %s (%s)\n", st.DisplayName, st.Target)
+				fmt.Fprintf(cmd.OutOrStdout(), "  Status:      %s (verification: %s, evidence: %s)\n", st.InstallState, st.VerificationStatus, st.Evidence)
+				fmt.Fprintf(cmd.OutOrStdout(), "  Skill Root:  %s (exists: %t, readable: %t)\n", st.EffectiveSkillRoot, st.SkillRootExists, st.SkillRootReadable)
+				fmt.Fprintf(cmd.OutOrStdout(), "  Skills:      %d managed, %d unmanaged\n", st.ManagedSkillsCount, st.UnmanagedSkillsCount)
+				fmt.Fprintf(cmd.OutOrStdout(), "  Setup Hint:  %s\n\n", st.SetupHint)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output status as JSON")
+	cmd.Flags().StringVar(&scope, "scope", "user", "Scope to check (user or project)")
+	return cmd
+}
+
+func newDiscoverCmd() *cobra.Command {
+	var jsonOutput bool
+	var scope string
+	var paths []string
+	cmd := &cobra.Command{
+		Use:   "discover [paths...]",
+		Short: "Discover unmanaged skill sources in harness roots or explicit paths",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			sc := install.ScopeUser
+			if scope == string(install.ScopeProject) {
+				sc = install.ScopeProject
+			}
+			allPaths := append(paths, args...)
+			candidates, err := discover.DiscoverScanned(discover.Options{
+				Scope: sc,
+				Paths: allPaths,
+			})
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				return printJSON(cmd, map[string]any{"candidates": candidates})
+			}
+			if len(candidates) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "No skill candidates discovered.")
+				return nil
+			}
+			for _, c := range candidates {
+				managedStr := "unmanaged"
+				if c.Managed {
+					managedStr = "managed"
+				}
+				validStr := "valid"
+				if !c.Valid {
+					validStr = "invalid"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "[%s] %s (%s, %s)\n", c.SourceID, c.DisplayName, managedStr, validStr)
+				fmt.Fprintf(cmd.OutOrStdout(), "  Location: %s\n", c.Location)
+				if c.Target != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "  Harness:  %s\n", c.Target)
+				}
+				if len(c.Diagnostics) > 0 {
+					fmt.Fprintf(cmd.OutOrStdout(), "  Diagnostics: %s\n", strings.Join(c.Diagnostics, "; "))
+				}
+				fmt.Fprintln(cmd.OutOrStdout())
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output discovery results as JSON")
+	cmd.Flags().StringVar(&scope, "scope", "user", "Scope to check (user or project)")
+	cmd.Flags().StringSliceVar(&paths, "path", nil, "Explicit paths to scan for skills")
+	return cmd
 }

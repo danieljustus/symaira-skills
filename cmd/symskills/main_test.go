@@ -1264,3 +1264,50 @@ func listDirFiles(t *testing.T, dir string) map[string]string {
 	}
 	return out
 }
+
+func TestTargetsCommand(t *testing.T) {
+	home := t.TempDir()
+	stdout, stderr, err := runCmd(t, home, "targets", "--json")
+	if err != nil {
+		t.Fatalf("targets failed: %v, stderr: %s", err, stderr)
+	}
+	var resp struct {
+		Targets []struct {
+			Target string `json:"target"`
+		} `json:"targets"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("unmarshal json: %v, stdout: %s", err, stdout)
+	}
+	if len(resp.Targets) != 4 {
+		t.Fatalf("expected 4 targets, got %d", len(resp.Targets))
+	}
+}
+
+func TestDiscoverCommand(t *testing.T) {
+	home := t.TempDir()
+	skillDir := filepath.Join(home, "my-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	skillMD := "---\nname: my-skill\ndescription: Test skill\n---\n\nBody"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMD), 0644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	stdout, stderr, err := runCmd(t, home, "discover", "--json", skillDir)
+	if err != nil {
+		t.Fatalf("discover failed: %v, stderr: %s", err, stderr)
+	}
+	var resp struct {
+		Candidates []struct {
+			DisplayName string `json:"display_name"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("unmarshal json: %v, stdout: %s", err, stdout)
+	}
+	if len(resp.Candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(resp.Candidates))
+	}
+}
