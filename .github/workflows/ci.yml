@@ -66,6 +66,27 @@ jobs:
             exit 1
           fi
 
+  govulncheck:
+    name: Govulncheck
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.4.0
+
+      - name: Run govulncheck
+        run: govulncheck ./...
+
   build:
     name: Build
     runs-on: ubuntu-latest
