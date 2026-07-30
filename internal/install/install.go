@@ -20,13 +20,6 @@ import (
 
 const markerFile = ".symskills.json"
 
-type Scope string
-
-const (
-	ScopeUser    Scope = "user"
-	ScopeProject Scope = "project"
-)
-
 type Mode string
 
 const (
@@ -41,11 +34,11 @@ type RenderedSkill struct {
 }
 
 type Options struct {
-	HomeDir    string `json:"home_dir"`
-	ProjectDir string `json:"project_dir"`
-	Scope      Scope  `json:"scope"`
-	Mode       Mode   `json:"mode"`
-	DryRun     bool   `json:"dry_run"`
+	HomeDir    string       `json:"home_dir"`
+	ProjectDir string       `json:"project_dir"`
+	Scope      render.Scope `json:"scope"`
+	Mode       Mode         `json:"mode"`
+	DryRun     bool         `json:"dry_run"`
 }
 
 type Result struct {
@@ -73,7 +66,7 @@ type Change struct {
 
 func Install(item RenderedSkill, opts Options) (Result, error) {
 	if opts.Scope == "" {
-		opts.Scope = ScopeUser
+		opts.Scope = render.ScopeUser
 	}
 	if opts.Mode == "" {
 		opts.Mode = ModeSymlink
@@ -185,32 +178,15 @@ func InstallPath(target render.Target, name string, opts Options) (string, error
 			project = cwd
 		}
 	}
-	if opts.Scope == ScopeProject {
-		switch target {
-		case render.TargetOpenCode:
-			return filepath.Join(project, ".opencode", "skills", name), nil
-		case render.TargetClaude:
-			return filepath.Join(project, ".claude", "skills", name), nil
-		case render.TargetCodex:
-			return filepath.Join(project, ".agents", "skills", name), nil
-		case render.TargetHermes:
-			return filepath.Join(project, ".hermes", "skills", name), nil
-		default:
-			return "", fmt.Errorf("unknown target %s", target)
-		}
+	if opts.Scope == "" {
+		opts.Scope = render.ScopeUser
 	}
-	switch target {
-	case render.TargetOpenCode:
-		return filepath.Join(home, ".config", "opencode", "skills", name), nil
-	case render.TargetClaude:
-		return filepath.Join(home, ".claude", "skills", name), nil
-	case render.TargetCodex:
-		return filepath.Join(home, ".agents", "skills", name), nil
-	case render.TargetHermes:
-		return filepath.Join(home, ".hermes", "skills", "symaira", name), nil
-	default:
+	spec, ok := render.LookupSpec(target)
+	if !ok {
 		return "", fmt.Errorf("unknown target %s", target)
 	}
+	root := spec.SkillRoot(home, project, opts.Scope)
+	return filepath.Join(root, name), nil
 }
 
 // TargetDir returns the base installation directory for a target without requiring a skill name.

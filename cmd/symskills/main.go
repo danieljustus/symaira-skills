@@ -436,7 +436,7 @@ func newDiffCmd() *cobra.Command {
 				}
 				return exitcodes.Wrap(fmt.Errorf("target %s produced no render output", target), exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
 			}
-			installedPath, err := install.InstallPath(target, rendered[0].Name, install.Options{Scope: install.ScopeUser})
+			installedPath, err := install.InstallPath(target, rendered[0].Name, install.Options{Scope: render.ScopeUser})
 			if err != nil {
 				return err
 			}
@@ -482,7 +482,7 @@ func newInstallCmd() *cobra.Command {
 			if out == "" {
 				out = cfg.RenderDir
 			}
-			opts := install.Options{Scope: install.Scope(scopeName), Mode: install.Mode(modeName), DryRun: dryRun}
+			opts := install.Options{Scope: render.Scope(scopeName), Mode: install.Mode(modeName), DryRun: dryRun}
 			if profileName != "" {
 				if len(args) > 0 {
 					return exitcodes.Wrap(fmt.Errorf("skill-dir is not used with --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "install profile")
@@ -516,7 +516,7 @@ func newInstallCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&targetName, "target", string(render.TargetOpenCode), "Target harness")
-	cmd.Flags().StringVar(&scopeName, "scope", string(install.ScopeUser), "Install scope: user or project")
+	cmd.Flags().StringVar(&scopeName, "scope", string(render.ScopeUser), "Install scope: user or project")
 	cmd.Flags().StringVar(&modeName, "mode", string(install.ModeSymlink), "Install mode: symlink or copy")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Render output directory")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Plan install without writing")
@@ -564,7 +564,7 @@ func newUninstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			removed, err := install.Uninstall(target, args[0], install.Options{Scope: install.Scope(scopeName)})
+			removed, err := install.Uninstall(target, args[0], install.Options{Scope: render.Scope(scopeName)})
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "uninstall skill")
 			}
@@ -584,7 +584,7 @@ func newUninstallCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&targetName, "target", string(render.TargetOpenCode), "Target harness")
-	cmd.Flags().StringVar(&scopeName, "scope", string(install.ScopeUser), "Install scope: user or project")
+	cmd.Flags().StringVar(&scopeName, "scope", string(render.ScopeUser), "Install scope: user or project")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	return cmd
 }
@@ -738,8 +738,8 @@ func newDoctorCmd() *cobra.Command {
 				User   string        `json:"user"`
 			}
 			paths := []targetPath{}
-			for _, target := range render.DefaultTargets {
-				dir, err := install.TargetDir(target, install.Options{Scope: install.ScopeUser})
+			for _, target := range render.DefaultTargets() {
+				dir, err := install.TargetDir(target, install.Options{Scope: render.ScopeUser})
 				if err != nil {
 					return err
 				}
@@ -788,7 +788,7 @@ func newServeCmd(version string) *cobra.Command {
 
 func targetsFromFlag(name string) ([]render.Target, error) {
 	if name == "" || name == "all" {
-		return render.DefaultTargets, nil
+		return render.DefaultTargets(), nil
 	}
 	names := strings.Split(name, ",")
 	targets := make([]render.Target, 0, len(names))
@@ -834,9 +834,9 @@ func newTargetsCmd() *cobra.Command {
 		Use:   "targets",
 		Short: "Display read-only inventory and readiness status for AI-agent harnesses",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			sc := install.ScopeUser
-			if scope == string(install.ScopeProject) {
-				sc = install.ScopeProject
+			sc := render.ScopeUser
+			if scope == string(render.ScopeProject) {
+				sc = render.ScopeProject
 			}
 			statuses := harness.ListStatus(harness.Options{
 				Scope: sc,
@@ -867,9 +867,9 @@ func newDiscoverCmd() *cobra.Command {
 		Use:   "discover [paths...]",
 		Short: "Discover unmanaged skill sources in harness roots or explicit paths",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			sc := install.ScopeUser
-			if scope == string(install.ScopeProject) {
-				sc = install.ScopeProject
+			sc := render.ScopeUser
+			if scope == string(render.ScopeProject) {
+				sc = render.ScopeProject
 			}
 			allPaths := append(paths, args...)
 			candidates, err := discover.DiscoverScanned(discover.Options{

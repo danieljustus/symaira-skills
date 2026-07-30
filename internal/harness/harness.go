@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/danieljustus/symaira-skills/internal/install"
 	"github.com/danieljustus/symaira-skills/internal/render"
 )
 
@@ -29,88 +28,35 @@ type Status struct {
 }
 
 type Options struct {
-	HomeDir    string        `json:"home_dir,omitempty"`
-	ProjectDir string        `json:"project_dir,omitempty"`
-	Scope      install.Scope `json:"scope,omitempty"`
+	HomeDir    string       `json:"home_dir,omitempty"`
+	ProjectDir string       `json:"project_dir,omitempty"`
+	Scope      render.Scope `json:"scope,omitempty"`
 }
 
 type Descriptor struct {
 	Target      render.Target
 	DisplayName string
 	BinaryName  string
-	ConfigDir   func(home, project string, scope install.Scope) string
-	SkillRoot   func(home, project string, scope install.Scope) string
+	ConfigDir   func(home, project string, scope render.Scope) string
+	SkillRoot   func(home, project string, scope render.Scope) string
 }
 
-var Descriptors = []Descriptor{
-	{
-		Target:      render.TargetOpenCode,
-		DisplayName: "OpenCode",
-		BinaryName:  "opencode",
-		ConfigDir: func(home, project string, scope install.Scope) string {
-			if scope == install.ScopeProject && project != "" {
-				return filepath.Join(project, ".opencode")
-			}
-			return filepath.Join(home, ".config", "opencode")
-		},
-		SkillRoot: func(home, project string, scope install.Scope) string {
-			if scope == install.ScopeProject && project != "" {
-				return filepath.Join(project, ".opencode", "skills")
-			}
-			return filepath.Join(home, ".config", "opencode", "skills")
-		},
-	},
-	{
-		Target:      render.TargetClaude,
-		DisplayName: "Claude Code",
-		BinaryName:  "claude",
-		ConfigDir: func(home, project string, scope install.Scope) string {
-			if scope == install.ScopeProject && project != "" {
-				return filepath.Join(project, ".claude")
-			}
-			return filepath.Join(home, ".claude")
-		},
-		SkillRoot: func(home, project string, scope install.Scope) string {
-			if scope == install.ScopeProject && project != "" {
-				return filepath.Join(project, ".claude", "skills")
-			}
-			return filepath.Join(home, ".claude", "skills")
-		},
-	},
-	{
-		Target:      render.TargetCodex,
-		DisplayName: "Codex",
-		BinaryName:  "codex",
-		ConfigDir: func(home, project string, scope install.Scope) string {
-			if scope == install.ScopeProject && project != "" {
-				return filepath.Join(project, ".agents")
-			}
-			return filepath.Join(home, ".agents")
-		},
-		SkillRoot: func(home, project string, scope install.Scope) string {
-			if scope == install.ScopeProject && project != "" {
-				return filepath.Join(project, ".agents", "skills")
-			}
-			return filepath.Join(home, ".agents", "skills")
-		},
-	},
-	{
-		Target:      render.TargetHermes,
-		DisplayName: "Hermes",
-		BinaryName:  "hermes",
-		ConfigDir: func(home, project string, scope install.Scope) string {
-			if scope == install.ScopeProject && project != "" {
-				return filepath.Join(project, ".hermes")
-			}
-			return filepath.Join(home, ".hermes")
-		},
-		SkillRoot: func(home, project string, scope install.Scope) string {
-			if scope == install.ScopeProject && project != "" {
-				return filepath.Join(project, ".hermes", "skills")
-			}
-			return filepath.Join(home, ".hermes", "skills", "symaira")
-		},
-	},
+// Descriptors returns the list of Descriptors derived from the target registry.
+// It is a variable so that external code can iterate over it; the values are
+// populated at init time from render.Targets.
+var Descriptors []Descriptor
+
+func init() {
+	Descriptors = make([]Descriptor, len(render.Targets))
+	for i, spec := range render.Targets {
+		Descriptors[i] = Descriptor{
+			Target:      spec.Name,
+			DisplayName: spec.DisplayName,
+			BinaryName:  spec.BinaryName,
+			ConfigDir:   spec.ConfigDir,
+			SkillRoot:   spec.SkillRoot,
+		}
+	}
 }
 
 // ListStatus returns the harness inventory and readiness status for all supported targets.
@@ -121,7 +67,7 @@ func ListStatus(opts Options) []Status {
 		}
 	}
 	if opts.Scope == "" {
-		opts.Scope = install.ScopeUser
+		opts.Scope = render.ScopeUser
 	}
 
 	results := make([]Status, 0, len(Descriptors))

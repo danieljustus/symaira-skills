@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/danieljustus/symaira-skills/internal/install"
 	"github.com/danieljustus/symaira-skills/internal/render"
 )
 
@@ -36,7 +35,7 @@ func TestDiscoverScannedHarnessRoots(t *testing.T) {
 
 	candidates, err := DiscoverScanned(Options{
 		HomeDir: tempHome,
-		Scope:   install.ScopeUser,
+		Scope:   render.ScopeUser,
 	})
 	if err != nil {
 		t.Fatalf("DiscoverScanned failed: %v", err)

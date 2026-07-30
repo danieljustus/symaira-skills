@@ -140,7 +140,7 @@ func Register(srv *mcpserver.Server, opts Options) {
 			if err := json.Unmarshal(in, &args); err != nil {
 				return nil, exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "parse arguments")
 			}
-			targets := render.DefaultTargets
+			targets := render.DefaultTargets()
 			if args.Target != "" {
 				target, err := render.ParseTarget(args.Target)
 				if err != nil {
@@ -209,9 +209,9 @@ func Register(srv *mcpserver.Server, opts Options) {
 				}
 				target = parsed
 			}
-			scope := install.ScopeUser
-			if args.Scope == string(install.ScopeProject) {
-				scope = install.ScopeProject
+			scope := render.ScopeUser
+			if args.Scope == string(render.ScopeProject) {
+				scope = render.ScopeProject
 			}
 			dryRun := true
 			if args.DryRun != nil {
@@ -279,9 +279,9 @@ func Register(srv *mcpserver.Server, opts Options) {
 			if err := json.Unmarshal(in, &args); err != nil {
 				return nil, exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "parse arguments")
 			}
-			scope := install.ScopeUser
-			if args.Scope == string(install.ScopeProject) {
-				scope = install.ScopeProject
+			scope := render.ScopeUser
+			if args.Scope == string(render.ScopeProject) {
+				scope = render.ScopeProject
 			}
 			statuses := harness.ListStatus(harness.Options{
 				HomeDir:    opts.HomeDir,
@@ -303,9 +303,9 @@ func Register(srv *mcpserver.Server, opts Options) {
 			if err := json.Unmarshal(in, &args); err != nil {
 				return nil, exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "parse arguments")
 			}
-			scope := install.ScopeUser
-			if args.Scope == string(install.ScopeProject) {
-				scope = install.ScopeProject
+			scope := render.ScopeUser
+			if args.Scope == string(render.ScopeProject) {
+				scope = render.ScopeProject
 			}
 			candidates, err := discover.DiscoverScanned(discover.Options{
 				HomeDir:    opts.HomeDir,
