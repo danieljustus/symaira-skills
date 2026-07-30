@@ -4,6 +4,12 @@
 
 The repository ships empty. It contains the tool, schema conventions, and test fixtures only. Users bring their own skill repositories.
 
+## Porting to a New Harness
+
+See [docs/porting-to-a-new-harness.md](docs/porting-to-a-new-harness.md) for the complete checklist and code touchpoints required to add support for a new AI-agent harness.
+
+Currently supported targets: OpenCode, Claude Code, Codex, and Hermes.
+
 ## Why
 
 Most modern agent harnesses can consume a `SKILL.md`-style bundle, but they disagree on discovery paths, optional metadata, invocation policies, and install workflows. `symskills` keeps the portable source in one place and generates normal harness-readable skill folders.

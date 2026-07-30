@@ -11,7 +11,6 @@ import (
 	"sort"
 
 	"github.com/danieljustus/symaira-skills/internal/harness"
-	"github.com/danieljustus/symaira-skills/internal/install"
 	"github.com/danieljustus/symaira-skills/internal/render"
 	"github.com/danieljustus/symaira-skills/internal/skill"
 )
@@ -30,10 +29,10 @@ type Candidate struct {
 }
 
 type Options struct {
-	HomeDir    string        `json:"home_dir,omitempty"`
-	ProjectDir string        `json:"project_dir,omitempty"`
-	Scope      install.Scope `json:"scope,omitempty"`
-	Paths      []string      `json:"paths,omitempty"`
+	HomeDir    string       `json:"home_dir,omitempty"`
+	ProjectDir string       `json:"project_dir,omitempty"`
+	Scope      render.Scope `json:"scope,omitempty"`
+	Paths      []string     `json:"paths,omitempty"`
 }
 
 type scanRoot struct {
@@ -50,7 +49,7 @@ func DiscoverScanned(opts Options) ([]Candidate, error) {
 		}
 	}
 	if opts.Scope == "" {
-		opts.Scope = install.ScopeUser
+		opts.Scope = render.ScopeUser
 	}
 
 	var roots []scanRoot
