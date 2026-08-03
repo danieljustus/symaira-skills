@@ -132,6 +132,74 @@ func LoadBundle(root string) (*Bundle, error) {
 	return &Bundle{Root: abs, Frontmatter: fm, Manifest: manifest, Body: body}, nil
 }
 
+// UnmarshalYAML accepts scalar values and YAML string lists for fields that
+// are represented as strings in the public Frontmatter type.
+func (fm *Frontmatter) UnmarshalYAML(value *yaml.Node) error {
+	var fields map[string]yaml.Node
+	if err := value.Decode(&fields); err != nil {
+		return err
+	}
+
+	normalized := make(map[string]any, len(fields))
+	for name, node := range fields {
+		if isStringFrontmatterField(name) {
+			text, err := decodeStringFrontmatterField(name, node)
+			if err != nil {
+				return err
+			}
+			normalized[name] = text
+			continue
+		}
+		var field any
+		if err := node.Decode(&field); err != nil {
+			return fmt.Errorf("frontmatter field %q: %w", name, err)
+		}
+		normalized[name] = field
+	}
+
+	data, err := yaml.Marshal(normalized)
+	if err != nil {
+		return fmt.Errorf("normalize frontmatter: %w", err)
+	}
+	type frontmatter Frontmatter
+	var decoded frontmatter
+	if err := yaml.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*fm = Frontmatter(decoded)
+	return nil
+}
+
+func isStringFrontmatterField(name string) bool {
+	switch name {
+	case "name", "description", "version", "author", "license", "compatibility":
+		return true
+	default:
+		return false
+	}
+}
+
+func decodeStringFrontmatterField(name string, node yaml.Node) (string, error) {
+	if node.Kind == 0 || node.Tag == "!!null" {
+		return "", nil
+	}
+	if node.Kind == yaml.ScalarNode {
+		var text string
+		if err := node.Decode(&text); err != nil {
+			return "", fmt.Errorf("frontmatter field %q must be a string or a list of strings: %w", name, err)
+		}
+		return text, nil
+	}
+	if node.Kind == yaml.SequenceNode {
+		var values []string
+		if err := node.Decode(&values); err != nil {
+			return "", fmt.Errorf("frontmatter field %q must be a string or a list of strings: %w", name, err)
+		}
+		return strings.Join(values, ", "), nil
+	}
+	return "", fmt.Errorf("frontmatter field %q must be a string or a list of strings", name)
+}
+
 func parseSkillMD(raw []byte) (Frontmatter, string, error) {
 	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
 	if !strings.HasPrefix(text, "---\n") {
