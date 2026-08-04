@@ -173,10 +173,25 @@ public final class CLICommandRunner {
         return try JSONDecoder().decode([Change].self, from: data)
     }
     
-    public func install(path: String, target: String, scope: String = "user", mode: String = "symlink", dryRun: Bool = false) async throws -> InstallResult {
+    /// Exit code the CLI uses for a conflicting destination, e.g. an unmanaged
+    /// skill already sitting at the install path.
+    public static let conflictExitCode = 6
+
+    /// True when the error is the CLI refusing to overwrite a skill it does not
+    /// manage — recoverable by re-running the install with `force: true`.
+    public static func isUnmanagedConflict(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == "SymskillsRunner", nsError.code == conflictExitCode else { return false }
+        return nsError.localizedDescription.contains("unmanaged skill")
+    }
+
+    public func install(path: String, target: String, scope: String = "user", mode: String = "symlink", dryRun: Bool = false, force: Bool = false) async throws -> InstallResult {
         var args = ["install", path, "--target", target, "--scope", scope, "--mode", mode, "--json"]
         if dryRun {
             args.append("--dry-run")
+        }
+        if force {
+            args.append("--force")
         }
         let data = try await runSubprocess(args: args)
         return try JSONDecoder().decode(InstallResult.self, from: data)
