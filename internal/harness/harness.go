@@ -1,4 +1,26 @@
 // Package harness provides read-only inventory and readiness status for AI-agent harnesses.
+//
+// VerificationStatus vs. smoke test
+//
+// VerificationStatus reports whether the harness install directory is present
+// and readable from symskills' perspective — it checks the skill root on disk
+// but does NOT confirm the harness runtime can discover and load those skills.
+//
+// The opt-in headless smoke test (scripts/smoke-harness.sh)  goes one step
+// further: it installs a fixture skill into a temp HOME via symskills, then
+// drives each available harness binary headless and asserts the skill was
+// loaded at runtime.  This exercises the end-to-end path that the harness
+// uses to resolve its own skill directory, something that symskills alone
+// cannot verify.
+//
+// Smoke-test results are complementary to the symskills targets command:
+//   - targets status `verified`   ↔ symskills confirms skill root on disk
+//   - smoke-test `PASS`           ↔ harness runtime loaded the installed skill
+//   - smoke-test `SKIP`           ↔ harness binary absent or API key missing
+//   - smoke-test `WARN`           ↔ harness ran but skill name not confirmed
+//
+// The smoke target is wired only into the weekly scheduled CI job; it never
+// runs in the PR gate.
 package harness
 
 import (
@@ -8,7 +30,6 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/danieljustus/symaira-skills/internal/install"
 	"github.com/danieljustus/symaira-skills/internal/render"
 )
 
@@ -25,92 +46,39 @@ type Status struct {
 	InstallState         string        `json:"install_state"`
 	Capabilities         []string      `json:"capabilities"`
 	SetupHint            string        `json:"setup_hint"`
-	VerificationStatus   string        `json:"verification_status"`
+	VerificationStatus   string        `json:"verification_status"` // "unknown" | "verified" | "not_verified" — see package doc for smoke-test relation
 }
 
 type Options struct {
-	HomeDir    string        `json:"home_dir,omitempty"`
-	ProjectDir string        `json:"project_dir,omitempty"`
-	Scope      install.Scope `json:"scope,omitempty"`
+	HomeDir    string       `json:"home_dir,omitempty"`
+	ProjectDir string       `json:"project_dir,omitempty"`
+	Scope      render.Scope `json:"scope,omitempty"`
 }
 
 type Descriptor struct {
 	Target      render.Target
 	DisplayName string
 	BinaryName  string
-	ConfigDir   func(home, project string, scope install.Scope) string
-	SkillRoot   func(home, project string, scope install.Scope) string
+	ConfigDir   func(home, project string, scope render.Scope) string
+	SkillRoot   func(home, project string, scope render.Scope) string
 }
 
-var Descriptors = []Descriptor{
-	{
-		Target:      render.TargetOpenCode,
-		DisplayName: "OpenCode",
-		BinaryName:  "opencode",
-		ConfigDir: func(home, project string, scope install.Scope) string {
-			if scope == install.ScopeProject && project != "" {
-				return filepath.Join(project, ".opencode")
-			}
-			return filepath.Join(home, ".config", "opencode")
-		},
-		SkillRoot: func(home, project string, scope install.Scope) string {
-			if scope == install.ScopeProject && project != "" {
-				return filepath.Join(project, ".opencode", "skills")
-			}
-			return filepath.Join(home, ".config", "opencode", "skills")
-		},
-	},
-	{
-		Target:      render.TargetClaude,
-		DisplayName: "Claude Code",
-		BinaryName:  "claude",
-		ConfigDir: func(home, project string, scope install.Scope) string {
-			if scope == install.ScopeProject && project != "" {
-				return filepath.Join(project, ".claude")
-			}
-			return filepath.Join(home, ".claude")
-		},
-		SkillRoot: func(home, project string, scope install.Scope) string {
-			if scope == install.ScopeProject && project != "" {
-				return filepath.Join(project, ".claude", "skills")
-			}
-			return filepath.Join(home, ".claude", "skills")
-		},
-	},
-	{
-		Target:      render.TargetCodex,
-		DisplayName: "Codex",
-		BinaryName:  "codex",
-		ConfigDir: func(home, project string, scope install.Scope) string {
-			if scope == install.ScopeProject && project != "" {
-				return filepath.Join(project, ".agents")
-			}
-			return filepath.Join(home, ".agents")
-		},
-		SkillRoot: func(home, project string, scope install.Scope) string {
-			if scope == install.ScopeProject && project != "" {
-				return filepath.Join(project, ".agents", "skills")
-			}
-			return filepath.Join(home, ".agents", "skills")
-		},
-	},
-	{
-		Target:      render.TargetHermes,
-		DisplayName: "Hermes",
-		BinaryName:  "hermes",
-		ConfigDir: func(home, project string, scope install.Scope) string {
-			if scope == install.ScopeProject && project != "" {
-				return filepath.Join(project, ".hermes")
-			}
-			return filepath.Join(home, ".hermes")
-		},
-		SkillRoot: func(home, project string, scope install.Scope) string {
-			if scope == install.ScopeProject && project != "" {
-				return filepath.Join(project, ".hermes", "skills")
-			}
-			return filepath.Join(home, ".hermes", "skills", "symaira")
-		},
-	},
+// Descriptors returns the list of Descriptors derived from the target registry.
+// It is a variable so that external code can iterate over it; the values are
+// populated at init time from render.Targets.
+var Descriptors []Descriptor
+
+func init() {
+	Descriptors = make([]Descriptor, len(render.Targets))
+	for i, spec := range render.Targets {
+		Descriptors[i] = Descriptor{
+			Target:      spec.Name,
+			DisplayName: spec.DisplayName,
+			BinaryName:  spec.BinaryName,
+			ConfigDir:   spec.ConfigDir,
+			SkillRoot:   spec.SkillRoot,
+		}
+	}
 }
 
 // ListStatus returns the harness inventory and readiness status for all supported targets.
@@ -121,7 +89,7 @@ func ListStatus(opts Options) []Status {
 		}
 	}
 	if opts.Scope == "" {
-		opts.Scope = install.ScopeUser
+		opts.Scope = render.ScopeUser
 	}
 
 	results := make([]Status, 0, len(Descriptors))

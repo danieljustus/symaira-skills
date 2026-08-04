@@ -21,7 +21,7 @@ func TestForceAdoptsUnmanagedDirectoryAndKeepsBackup(t *testing.T) {
 		Target: render.TargetOpenCode,
 		Name:   "adopted",
 		Path:   rendered,
-	}, Options{HomeDir: home, Scope: ScopeUser, Mode: ModeCopy, Force: true})
+	}, Options{HomeDir: home, Scope: render.ScopeUser, Mode: ModeCopy, Force: true})
 	if err != nil {
 		t.Fatalf("forced install: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestForceOverUnmanagedSymlinkLeavesLinkTargetIntact(t *testing.T) {
 		Target: render.TargetOpenCode,
 		Name:   "linked",
 		Path:   rendered,
-	}, Options{HomeDir: home, Scope: ScopeUser, Mode: ModeCopy, Force: true})
+	}, Options{HomeDir: home, Scope: render.ScopeUser, Mode: ModeCopy, Force: true})
 	if err != nil {
 		t.Fatalf("forced install over symlink: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestWithoutForceUnmanagedDestStillRefused(t *testing.T) {
 		Target: render.TargetOpenCode,
 		Name:   "guarded",
 		Path:   rendered,
-	}, Options{HomeDir: home, Scope: ScopeUser, Mode: ModeCopy}); err == nil {
+	}, Options{HomeDir: home, Scope: render.ScopeUser, Mode: ModeCopy}); err == nil {
 		t.Fatal("expected refusal without --force")
 	}
 	data, err := os.ReadFile(filepath.Join(dest, "SKILL.md"))
@@ -122,7 +122,7 @@ func TestInstallIntoSelfSymlinkedHarnessDirKeepsContent(t *testing.T) {
 		Target: render.TargetOpenCode,
 		Name:   "selfref",
 		Path:   rendered,
-	}, Options{HomeDir: home, Scope: ScopeUser, Mode: ModeSymlink})
+	}, Options{HomeDir: home, Scope: render.ScopeUser, Mode: ModeSymlink})
 	if err != nil {
 		t.Fatalf("install into self-symlinked harness dir: %v", err)
 	}

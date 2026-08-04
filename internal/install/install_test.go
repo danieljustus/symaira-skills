@@ -19,7 +19,7 @@ func TestInstallRefusesUnmanagedCollision(t *testing.T) {
 		Target: render.TargetOpenCode,
 		Name:   "collide",
 		Path:   rendered,
-	}, Options{HomeDir: home, Scope: ScopeUser, Mode: ModeCopy})
+	}, Options{HomeDir: home, Scope: render.ScopeUser, Mode: ModeCopy})
 	if err == nil {
 		t.Fatal("expected unmanaged collision error")
 	}
@@ -34,7 +34,7 @@ func TestInstallCopyWritesMarkerAndUninstallRemovesManagedSkill(t *testing.T) {
 		Target: render.TargetClaude,
 		Name:   "managed",
 		Path:   rendered,
-	}, Options{HomeDir: home, Scope: ScopeUser, Mode: ModeCopy})
+	}, Options{HomeDir: home, Scope: render.ScopeUser, Mode: ModeCopy})
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestInstallCopyWritesMarkerAndUninstallRemovesManagedSkill(t *testing.T) {
 		t.Fatalf("marker missing: %v", err)
 	}
 
-	removed, err := Uninstall(render.TargetClaude, "managed", Options{HomeDir: home, Scope: ScopeUser})
+	removed, err := Uninstall(render.TargetClaude, "managed", Options{HomeDir: home, Scope: render.ScopeUser})
 	if err != nil {
 		t.Fatalf("Uninstall: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestInstallAndUninstallDanglingSymlink(t *testing.T) {
 		Target: render.TargetClaude,
 		Name:   "dangling",
 		Path:   rendered,
-	}, Options{HomeDir: home, Scope: ScopeUser, Mode: ModeSymlink})
+	}, Options{HomeDir: home, Scope: render.ScopeUser, Mode: ModeSymlink})
 	if err != nil {
 		t.Fatalf("Install symlink: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestInstallAndUninstallDanglingSymlink(t *testing.T) {
 		Target: render.TargetClaude,
 		Name:   "dangling",
 		Path:   newRendered,
-	}, Options{HomeDir: home, Scope: ScopeUser, Mode: ModeSymlink})
+	}, Options{HomeDir: home, Scope: render.ScopeUser, Mode: ModeSymlink})
 	if err != nil {
 		t.Fatalf("Re-install over dangling symlink failed: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestInstallAndUninstallDanglingSymlink(t *testing.T) {
 	if err := os.RemoveAll(newRendered); err != nil {
 		t.Fatal(err)
 	}
-	removed, err := Uninstall(render.TargetClaude, "dangling", Options{HomeDir: home, Scope: ScopeUser})
+	removed, err := Uninstall(render.TargetClaude, "dangling", Options{HomeDir: home, Scope: render.ScopeUser})
 	if err != nil {
 		t.Fatalf("Uninstall dangling symlink failed: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestInstallPathRejectsHostileNames(t *testing.T) {
 
 func TestInstallPathScopeProject(t *testing.T) {
 	project := t.TempDir()
-	opts := Options{ProjectDir: project, Scope: ScopeProject}
+	opts := Options{ProjectDir: project, Scope: render.ScopeProject}
 
 	cases := []struct {
 		target render.Target
@@ -191,7 +191,7 @@ func TestInstallPathScopeProject(t *testing.T) {
 
 func TestInstallPathUserAllTargets(t *testing.T) {
 	home := t.TempDir()
-	opts := Options{HomeDir: home, Scope: ScopeUser}
+	opts := Options{HomeDir: home, Scope: render.ScopeUser}
 
 	cases := []struct {
 		target render.Target
@@ -222,7 +222,7 @@ func TestInstallPathUserAllTargets(t *testing.T) {
 
 func TestTargetDir(t *testing.T) {
 	home := t.TempDir()
-	opts := Options{HomeDir: home, Scope: ScopeUser}
+	opts := Options{HomeDir: home, Scope: render.ScopeUser}
 
 	cases := []struct {
 		target render.Target

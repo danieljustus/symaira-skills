@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/danieljustus/symaira-skills/internal/install"
 	"github.com/danieljustus/symaira-skills/internal/render"
 )
 
@@ -27,7 +26,7 @@ func TestListStatusUserScope(t *testing.T) {
 
 	statuses := ListStatus(Options{
 		HomeDir: tempHome,
-		Scope:   install.ScopeUser,
+		Scope:   render.ScopeUser,
 	})
 
 	if len(statuses) != len(Descriptors) {
@@ -68,7 +67,7 @@ func TestListStatusMissingRoots(t *testing.T) {
 
 	statuses := ListStatus(Options{
 		HomeDir: tempHome,
-		Scope:   install.ScopeUser,
+		Scope:   render.ScopeUser,
 	})
 
 	for _, s := range statuses {

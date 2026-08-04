@@ -89,7 +89,7 @@ skill = "debug"
 
 	results, issues, err := InstallProfile(lib, profiles, project, output, render.TargetOpenCode, "default", install.Options{
 		HomeDir: home,
-		Scope:   install.ScopeUser,
+		Scope:   render.ScopeUser,
 		Mode:    install.ModeCopy,
 	})
 	if err != nil {
@@ -121,7 +121,7 @@ skill = "missing"
 
 	results, issues, err := InstallProfile(lib, profiles, project, output, render.TargetOpenCode, "default", install.Options{
 		HomeDir: home,
-		Scope:   install.ScopeUser,
+		Scope:   render.ScopeUser,
 		Mode:    install.ModeCopy,
 	})
 	if err != nil {
@@ -156,7 +156,7 @@ skill = "debug"
 
 	_, issues, err := InstallProfile(lib, profiles, project, output, render.TargetOpenCode, "default", install.Options{
 		HomeDir: badHome,
-		Scope:   install.ScopeUser,
+		Scope:   render.ScopeUser,
 		Mode:    install.ModeCopy,
 	})
 	if len(issues) != 0 {
@@ -216,7 +216,7 @@ alias = "dbg"
 
 	results, issues, err := InstallProfile(lib, profiles, project, output, render.TargetOpenCode, "aliased", install.Options{
 		HomeDir: home,
-		Scope:   install.ScopeUser,
+		Scope:   render.ScopeUser,
 		Mode:    install.ModeCopy,
 	})
 	if err != nil {

@@ -26,7 +26,128 @@ const (
 	TargetHermes   Target = "hermes"
 )
 
-var DefaultTargets = []Target{TargetOpenCode, TargetClaude, TargetCodex, TargetHermes}
+// DefaultTargets returns the list of all registered target names.
+func DefaultTargets() []Target {
+	targets := make([]Target, len(Targets))
+	for i, spec := range Targets {
+		targets[i] = spec.Name
+	}
+	return targets
+}
+
+// Scope represents the installation scope for a target harness.
+type Scope string
+
+const (
+	ScopeUser    Scope = "user"
+	ScopeProject Scope = "project"
+)
+
+// TargetSpec holds metadata and path functions for a single harness target.
+// Targets is the single registry; any code that needs per-target information
+// (paths, display names, quirks) should read from here.
+type TargetSpec struct {
+	Name        Target
+	DisplayName string
+	BinaryName  string
+	ConfigDir   func(home, project string, scope Scope) string
+	SkillRoot   func(home, project string, scope Scope) string
+	Quirks      string
+}
+
+// Targets is the single registry of all supported harness targets.
+var Targets = []TargetSpec{
+	{
+		Name:        TargetOpenCode,
+		DisplayName: "OpenCode",
+		BinaryName:  "opencode",
+		ConfigDir: func(home, project string, scope Scope) string {
+			if scope == ScopeProject && project != "" {
+				return filepath.Join(project, ".opencode")
+			}
+			return filepath.Join(home, ".config", "opencode")
+		},
+		SkillRoot: func(home, project string, scope Scope) string {
+			if scope == ScopeProject && project != "" {
+				return filepath.Join(project, ".opencode", "skills")
+			}
+			return filepath.Join(home, ".config", "opencode", "skills")
+		},
+	},
+	{
+		Name:        TargetClaude,
+		DisplayName: "Claude Code",
+		BinaryName:  "claude",
+		ConfigDir: func(home, project string, scope Scope) string {
+			if scope == ScopeProject && project != "" {
+				return filepath.Join(project, ".claude")
+			}
+			return filepath.Join(home, ".claude")
+		},
+		SkillRoot: func(home, project string, scope Scope) string {
+			if scope == ScopeProject && project != "" {
+				return filepath.Join(project, ".claude", "skills")
+			}
+			return filepath.Join(home, ".claude", "skills")
+		},
+	},
+	{
+		Name:        TargetCodex,
+		DisplayName: "Codex",
+		BinaryName:  "codex",
+		ConfigDir: func(home, project string, scope Scope) string {
+			if scope == ScopeProject && project != "" {
+				return filepath.Join(project, ".agents")
+			}
+			return filepath.Join(home, ".agents")
+		},
+		SkillRoot: func(home, project string, scope Scope) string {
+			if scope == ScopeProject && project != "" {
+				return filepath.Join(project, ".agents", "skills")
+			}
+			return filepath.Join(home, ".agents", "skills")
+		},
+		Quirks: "Writes agents/openai.yaml metadata on render",
+	},
+	{
+		Name:        TargetHermes,
+		DisplayName: "Hermes",
+		BinaryName:  "hermes",
+		ConfigDir: func(home, project string, scope Scope) string {
+			if scope == ScopeProject && project != "" {
+				return filepath.Join(project, ".hermes")
+			}
+			return filepath.Join(home, ".hermes")
+		},
+		SkillRoot: func(home, project string, scope Scope) string {
+			if scope == ScopeProject && project != "" {
+				return filepath.Join(project, ".hermes", "skills")
+			}
+			return filepath.Join(home, ".hermes", "skills", "symaira")
+		},
+	},
+}
+
+// LookupSpec returns the TargetSpec for the given target and a boolean
+// indicating whether it was found.
+func LookupSpec(t Target) (TargetSpec, bool) {
+	for _, spec := range Targets {
+		if spec.Name == t {
+			return spec, true
+		}
+	}
+	return TargetSpec{}, false
+}
+
+// MustLookupSpec returns the TargetSpec for the given target, panicking
+// if the target is unknown.
+func MustLookupSpec(t Target) TargetSpec {
+	spec, ok := LookupSpec(t)
+	if !ok {
+		panic(fmt.Sprintf("render: unknown target %q", t))
+	}
+	return spec
+}
 
 // RenderMeta carries optional provenance metadata for profile-aware rendering.
 type RenderMeta struct {
@@ -206,7 +327,7 @@ func encodeSkillMD(fm skill.Frontmatter, body string) (string, error) {
 // successfully rendered items along with any per-target errors.
 func RenderAll(bundle *skill.Bundle, outDir string, targets []Target, meta ...RenderMeta) ([]Rendered, []error) {
 	if len(targets) == 0 {
-		targets = DefaultTargets
+		targets = DefaultTargets()
 	}
 	var rendered []Rendered
 	var errs []error
@@ -341,10 +462,10 @@ policy:
 
 // ParseTarget converts a user-facing target string.
 func ParseTarget(s string) (Target, error) {
-	switch Target(s) {
-	case TargetOpenCode, TargetClaude, TargetCodex, TargetHermes:
-		return Target(s), nil
-	default:
-		return "", fmt.Errorf("unknown target %q", s)
+	for _, spec := range Targets {
+		if string(spec.Name) == s {
+			return Target(s), nil
+		}
 	}
+	return "", fmt.Errorf("unknown target %q", s)
 }

@@ -29,7 +29,7 @@ func TestInstallRefusesUnmanagedSymlinkTarget(t *testing.T) {
 		Target: render.TargetOpenCode,
 		Name:   "unmanaged",
 		Path:   rendered,
-	}, Options{HomeDir: home, Scope: ScopeUser, Mode: ModeCopy})
+	}, Options{HomeDir: home, Scope: render.ScopeUser, Mode: ModeCopy})
 	if err == nil {
 		t.Fatal("expected refusal to overwrite symlink pointing at an unmanaged skill")
 	}
@@ -55,7 +55,7 @@ func TestInstallOverManagedSymlinkTargetSucceeds(t *testing.T) {
 		Target: render.TargetOpenCode,
 		Name:   "managed",
 		Path:   rendered,
-	}, Options{HomeDir: home, Scope: ScopeUser, Mode: ModeCopy})
+	}, Options{HomeDir: home, Scope: render.ScopeUser, Mode: ModeCopy})
 	if err != nil {
 		t.Fatalf("Install over managed symlink target: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestUninstallRefusesUnmanagedSymlinkTarget(t *testing.T) {
 		t.Fatalf("Symlink: %v", err)
 	}
 
-	_, err := Uninstall(render.TargetOpenCode, "unmanaged", Options{HomeDir: home, Scope: ScopeUser})
+	_, err := Uninstall(render.TargetOpenCode, "unmanaged", Options{HomeDir: home, Scope: render.ScopeUser})
 	if err == nil {
 		t.Fatal("expected refusal to remove symlink pointing at an unmanaged skill")
 	}
@@ -91,7 +91,7 @@ func TestUninstallRefusesUnmanagedDirectory(t *testing.T) {
 	dest := filepath.Join(home, ".config", "opencode", "skills", "unmanaged")
 	writeFile(t, filepath.Join(dest, "SKILL.md"), "unmanaged, no marker")
 
-	_, err := Uninstall(render.TargetOpenCode, "unmanaged", Options{HomeDir: home, Scope: ScopeUser})
+	_, err := Uninstall(render.TargetOpenCode, "unmanaged", Options{HomeDir: home, Scope: render.ScopeUser})
 	if err == nil {
 		t.Fatal("expected refusal to remove an unmanaged directory")
 	}
@@ -102,7 +102,7 @@ func TestUninstallRefusesUnmanagedDirectory(t *testing.T) {
 
 func TestUninstallPropagatesInstallPathError(t *testing.T) {
 	home := t.TempDir()
-	_, err := Uninstall(render.Target("bogus"), "name", Options{HomeDir: home, Scope: ScopeUser})
+	_, err := Uninstall(render.Target("bogus"), "name", Options{HomeDir: home, Scope: render.ScopeUser})
 	if err == nil {
 		t.Fatal("expected error for unknown target")
 	}
@@ -110,7 +110,7 @@ func TestUninstallPropagatesInstallPathError(t *testing.T) {
 
 func TestUninstallNotInstalledReportsRemovedFalse(t *testing.T) {
 	home := t.TempDir()
-	removed, err := Uninstall(render.TargetOpenCode, "never-installed", Options{HomeDir: home, Scope: ScopeUser})
+	removed, err := Uninstall(render.TargetOpenCode, "never-installed", Options{HomeDir: home, Scope: render.ScopeUser})
 	if err != nil {
 		t.Fatalf("Uninstall of non-installed skill should not error, got: %v", err)
 	}
