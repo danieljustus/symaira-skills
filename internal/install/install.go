@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/danieljustus/symaira-skills/internal/fsutil"
@@ -120,23 +121,76 @@ func Install(item RenderedSkill, opts Options) (Result, error) {
 	if err := writeMarker(item.Path, item, opts.Mode); err != nil {
 		return Result{}, err
 	}
-	if err := os.RemoveAll(dest); err != nil {
-		return Result{}, err
-	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return Result{}, err
-	}
-	if opts.Mode == ModeSymlink {
-		if err := os.Symlink(item.Path, dest); err == nil {
-			return result, nil
-		}
-		opts.Mode = ModeCopy
-		result.Mode = ModeCopy
-	}
-	if err := copyDir(item.Path, dest); err != nil {
+	if err := installAtomic(item, dest, &opts, &result); err != nil {
 		return Result{}, err
 	}
 	return result, nil
+}
+
+// osRename is a seam for fault-injection tests of the atomic swap sequence.
+var osRename = os.Rename
+
+// installAtomic materializes the rendered skill into a sibling dest.tmp-<pid>
+// staging path and swaps it into place with two renames, so dest is never
+// observed empty or half-written. The symlink fast path gets the same
+// treatment: the link is created at the staging path and a failure falls
+// back to a staged copy; dest is only ever replaced by the final rename. On
+// any error the partial staging path is removed and the previous install
+// (held at dest.bak) is restored.
+func installAtomic(item RenderedSkill, dest string, opts *Options, result *Result) error {
+	tmp := dest + ".tmp-" + strconv.Itoa(os.Getpid())
+	if err := os.RemoveAll(tmp); err != nil {
+		return fmt.Errorf("clearing stale staging path: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	if opts.Mode == ModeSymlink {
+		if err := os.Symlink(item.Path, tmp); err != nil {
+			// Symlinks are unavailable here; fall back to a staged copy.
+			opts.Mode = ModeCopy
+			result.Mode = ModeCopy
+		}
+	}
+	if opts.Mode == ModeCopy {
+		if err := copyDir(item.Path, tmp); err != nil {
+			_ = os.RemoveAll(tmp)
+			return err
+		}
+	}
+	if err := swapIntoPlace(dest, tmp); err != nil {
+		_ = os.RemoveAll(tmp)
+		return err
+	}
+	return nil
+}
+
+// swapIntoPlace atomically replaces dest with the materialized tmp staging
+// path: dest is renamed aside to dest.bak, tmp is promoted to dest, and the
+// backup is deleted. When the promotion fails, the previous install is
+// restored from dest.bak.
+func swapIntoPlace(dest, tmp string) error {
+	bak := dest + ".bak"
+	if err := os.RemoveAll(bak); err != nil {
+		return err
+	}
+	moved := false
+	if _, err := os.Lstat(dest); err == nil {
+		if err := osRename(dest, bak); err != nil {
+			return fmt.Errorf("moving previous install aside: %w", err)
+		}
+		moved = true
+	}
+	if err := osRename(tmp, dest); err != nil {
+		if moved {
+			if rerr := osRename(bak, dest); rerr != nil {
+				return fmt.Errorf("publishing install: %w (restoring previous install: %v)", err, rerr)
+			}
+		}
+		return fmt.Errorf("publishing install: %w", err)
+	}
+	_ = os.RemoveAll(bak)
+	return nil
 }
 
 // sameLocation reports whether dest and src denote the same directory once
