@@ -8,6 +8,7 @@ test:
 
 lint: fmt-check
 	go vet ./...
+	go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 
 fmt-check:
 	@test -z "$$(gofmt -l .)" || (echo "gofmt diff found:" && gofmt -l . && exit 1)

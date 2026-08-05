@@ -5,3 +5,16 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      go-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
