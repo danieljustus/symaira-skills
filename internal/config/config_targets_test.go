@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -95,5 +96,27 @@ skill_root_user = "/project/myagent/skills"
 	}
 	if len(targets) != 1 || targets[0].SkillRootUser != "/project/myagent/skills" {
 		t.Errorf("project file should override global, got %+v", targets)
+	}
+}
+
+func TestLoadTargetsRejectsMalformedConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfgDir := filepath.Join(home, ".config", "symskills")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cfgDir, "config.toml")
+	if err := os.WriteFile(path, []byte("[[targets]\nname = \"broken\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadTargets()
+	if err == nil {
+		t.Fatal("expected malformed config to fail")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Fatalf("error %q does not identify malformed config path %q", err, path)
 	}
 }

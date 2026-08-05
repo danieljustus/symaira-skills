@@ -39,13 +39,12 @@ func LoadTargets() ([]CustomTarget, error) {
 	if home, err := os.UserHomeDir(); err == nil && os.Getenv("HOME") == "" {
 		globalPath = filepath.Join(home, ".config", "symskills", "config.toml")
 	}
-	if err := mergeTargetsFile(&merged, globalPath); err != nil {
-		return nil, err
-	}
-
+	paths := []string{globalPath}
 	if cwd, err := os.Getwd(); err == nil {
-		projectPath := filepath.Join(cwd, ".symskills.toml")
-		if err := mergeTargetsFile(&merged, projectPath); err != nil {
+		paths = append(paths, filepath.Join(cwd, ".symskills.toml"))
+	}
+	for _, path := range paths {
+		if err := mergeTargetsFile(&merged, path); err != nil {
 			return nil, err
 		}
 	}
