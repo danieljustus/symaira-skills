@@ -20,6 +20,11 @@ import (
 
 const markerFile = ".symskills.json"
 
+// MarkerSchemaVersion is the .symskills.json marker format version this
+// build understands and writes. docs/marker-protocol.md is the contract the
+// macOS client is bound by; bump only on incompatible marker changes.
+const MarkerSchemaVersion = 1
+
 type Mode string
 
 const (
@@ -57,13 +62,14 @@ type Result struct {
 }
 
 type Marker struct {
-	ManagedBy  string        `json:"managed_by"`
-	Target     render.Target `json:"target"`
-	Name       string        `json:"name"`
-	RenderedAt string        `json:"rendered_at"`
-	Mode       Mode          `json:"mode"`
-	Installed  string        `json:"installed"`
-	SourceHash string        `json:"source_hash,omitempty"`
+	SchemaVersion int           `json:"schema_version,omitempty"`
+	ManagedBy     string        `json:"managed_by"`
+	Target        render.Target `json:"target"`
+	Name          string        `json:"name"`
+	RenderedAt    string        `json:"rendered_at"`
+	Mode          Mode          `json:"mode"`
+	Installed     string        `json:"installed"`
+	SourceHash    string        `json:"source_hash,omitempty"`
 }
 
 type Change struct {
@@ -97,7 +103,7 @@ func Install(item RenderedSkill, opts Options) (Result, error) {
 			result.Action = "planned"
 			return result, nil
 		}
-		if err := os.WriteFile(filepath.Join(item.Path, markerFile), markerBytes(item, opts.Mode), 0o644); err != nil {
+		if err := writeMarker(item.Path, item, opts.Mode); err != nil {
 			return Result{}, err
 		}
 		return result, nil
@@ -111,7 +117,7 @@ func Install(item RenderedSkill, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	result.BackupPath = backup
-	if err := os.WriteFile(filepath.Join(item.Path, markerFile), markerBytes(item, opts.Mode), 0o644); err != nil {
+	if err := writeMarker(item.Path, item, opts.Mode); err != nil {
 		return Result{}, err
 	}
 	if err := os.RemoveAll(dest); err != nil {
@@ -230,12 +236,12 @@ func ensureManagedOrAbsent(path string) error {
 		if _, err := os.Stat(filepath.Join(target, markerFile)); err != nil {
 			return fmt.Errorf("refusing to overwrite unmanaged skill at %s", path)
 		}
-		return nil
+		return checkMarkerWritable(filepath.Join(target, markerFile))
 	}
 	if _, err := os.Stat(filepath.Join(path, markerFile)); err != nil {
 		return fmt.Errorf("refusing to overwrite unmanaged skill at %s", path)
 	}
-	return nil
+	return checkMarkerWritable(filepath.Join(path, markerFile))
 }
 
 func markerBytes(item RenderedSkill, mode Mode) []byte {
@@ -251,16 +257,63 @@ func markerBytes(item RenderedSkill, mode Mode) []byte {
 		}
 	}
 	m := Marker{
-		ManagedBy:  "symskills",
-		Target:     item.Target,
-		Name:       item.Name,
-		RenderedAt: item.Path,
-		Mode:       mode,
-		Installed:  time.Now().UTC().Format(time.RFC3339),
-		SourceHash: srcHash,
+		SchemaVersion: MarkerSchemaVersion,
+		ManagedBy:     "symskills",
+		Target:        item.Target,
+		Name:          item.Name,
+		RenderedAt:    item.Path,
+		Mode:          mode,
+		Installed:     time.Now().UTC().Format(time.RFC3339),
+		SourceHash:    srcHash,
 	}
 	data, _ := json.MarshalIndent(m, "", "  ")
 	return append(data, '\n')
+}
+
+// markerSchemaVersion returns the schema_version of a serialized marker.
+// Markers written before versioning existed carry no field; those are
+// treated as version 1.
+func markerSchemaVersion(data []byte) (int, error) {
+	var m struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return 0, fmt.Errorf("parsing marker: %w", err)
+	}
+	if m.SchemaVersion == 0 {
+		return MarkerSchemaVersion, nil
+	}
+	return m.SchemaVersion, nil
+}
+
+// checkMarkerWritable refuses to overwrite a marker written by a newer
+// symskills or macOS client than this build understands.
+func checkMarkerWritable(path string) error {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	v, err := markerSchemaVersion(data)
+	if err != nil {
+		return fmt.Errorf("reading marker %s: %w", path, err)
+	}
+	if v > MarkerSchemaVersion {
+		return fmt.Errorf("refusing to overwrite marker %s: schema_version %d is newer than supported version %d", path, v, MarkerSchemaVersion)
+	}
+	return nil
+}
+
+// writeMarker writes the current marker into the rendered tree after
+// refusing to clobber a marker from a newer schema version.
+func writeMarker(dir string, item RenderedSkill, mode Mode) error {
+	markerPath := filepath.Join(dir, markerFile)
+	if err := checkMarkerWritable(markerPath); err != nil {
+		return err
+	}
+	return os.WriteFile(markerPath, markerBytes(item, mode), 0o644)
 }
 
 func InstallPath(target render.Target, name string, opts Options) (string, error) {
