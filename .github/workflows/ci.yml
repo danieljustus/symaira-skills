@@ -64,6 +64,9 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
+      - name: Run staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+
       - name: Check formatting
         run: |
           if [ -n "$(gofmt -l .)" ]; then
@@ -75,7 +78,6 @@ jobs:
   govulncheck:
     name: Govulncheck
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout code
@@ -87,11 +89,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.4.0
-
       - name: Run govulncheck
-        run: govulncheck ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   build:
     name: Build

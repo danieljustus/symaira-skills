@@ -41,7 +41,7 @@ func TestInitCommand(t *testing.T) {
 	}
 
 	// Second init without force
-	stdout, stderr, err = runCmd(t, home, "init")
+	stdout, _, err = runCmd(t, home, "init")
 	if err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestInitCommand(t *testing.T) {
 	}
 
 	// Third init with force
-	stdout, stderr, err = runCmd(t, home, "init", "--force")
+	stdout, _, err = runCmd(t, home, "init", "--force")
 	if err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
@@ -1133,11 +1133,10 @@ func TestDiffLeavesRenderDirIntact(t *testing.T) {
 	writeTestSkill(t, skillDir, "diff-safe", "For testing diff safety")
 
 	// Do a render first so the render cache is populated.
-	stdout, stderr, err := runCmd(t, home, "render", "--target", "opencode", skillDir)
+	_, stderr, err := runCmd(t, home, "render", "--target", "opencode", skillDir)
 	if err != nil {
 		t.Fatalf("render failed: %v, stderr: %s", err, stderr)
 	}
-	_ = stdout
 
 	// Find the rendered output path.
 	renderDir := filepath.Join(home, ".local", "share", "symskills", "rendered", "opencode", "diff-safe")
@@ -1152,7 +1151,7 @@ func TestDiffLeavesRenderDirIntact(t *testing.T) {
 
 	// Run diff — this used to call RenderAll on the render dir directly,
 	// which would do RemoveAll + re-copy. Now it uses a temp dir.
-	stdout, stderr, err = runCmd(t, home, "diff", "--target", "opencode", skillDir)
+	_, stderr, err = runCmd(t, home, "diff", "--target", "opencode", skillDir)
 	if err != nil {
 		t.Fatalf("diff failed: %v, stderr: %s", err, stderr)
 	}
@@ -1183,11 +1182,10 @@ func TestDiffWithSymlinkInstallDoesNotDeleteTarget(t *testing.T) {
 	writeTestSkill(t, skillDir, "diff-symlink", "Symlink diff safety test")
 
 	// Install with symlink mode (default).
-	stdout, stderr, err := runCmd(t, home, "install", "--target", "opencode", "--mode", "symlink", skillDir)
+	_, stderr, err := runCmd(t, home, "install", "--target", "opencode", "--mode", "symlink", skillDir)
 	if err != nil {
 		t.Fatalf("install failed: %v, stderr: %s", err, stderr)
 	}
-	_ = stdout
 
 	// The installed path should be a symlink.
 	installPath := filepath.Join(home, ".config", "opencode", "skills", "diff-symlink")
@@ -1212,7 +1210,7 @@ func TestDiffWithSymlinkInstallDoesNotDeleteTarget(t *testing.T) {
 	beforeFiles := listDirFiles(t, renderDir)
 
 	// Run diff.
-	stdout, stderr, err = runCmd(t, home, "diff", "--target", "opencode", skillDir)
+	_, stderr, err = runCmd(t, home, "diff", "--target", "opencode", skillDir)
 	if err != nil {
 		t.Fatalf("diff failed: %v, stderr: %s", err, stderr)
 	}
