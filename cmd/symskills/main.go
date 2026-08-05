@@ -774,22 +774,23 @@ func newDoctorCmd() *cobra.Command {
 }
 
 func newServeCmd(version string) *cobra.Command {
-	var stdio bool
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Serve symskills MCP tools over stdio",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if !stdio {
-				return exitcodes.Wrap(fmt.Errorf("--stdio is required"), exitcodes.ExitConfig, exitcodes.KindValidation, "serve")
-			}
 			cfg, err := config.Load()
 			if err != nil {
 				return err
 			}
+			// stdout stays reserved for JSON-RPC frames; all diagnostics go
+			// through slog to stderr.
 			return mcptools.Serve(version, mcptools.Options{LibraryDir: cfg.LibraryDir, RenderDir: cfg.RenderDir, ProfilesDir: cfg.ProfilesDir})
 		},
 	}
-	cmd.Flags().BoolVar(&stdio, "stdio", false, "Serve over stdio")
+	// stdio is the only transport, so it is always enabled. The flag is
+	// kept as a no-op alias so existing MCP client configs that pass
+	// --stdio keep working unchanged.
+	cmd.Flags().Bool("stdio", true, "Serve over stdio (default; flag kept for backward compatibility)")
 	return cmd
 }
 
