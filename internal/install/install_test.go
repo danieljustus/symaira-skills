@@ -170,6 +170,8 @@ func TestInstallPathScopeProject(t *testing.T) {
 		{render.TargetClaude, []string{".claude", "skills", "my-skill"}},
 		{render.TargetCodex, []string{".agents", "skills", "my-skill"}},
 		{render.TargetHermes, []string{".hermes", "skills", "my-skill"}},
+		{render.TargetAntigravity, []string{".agents", "skills", "my-skill"}},
+		{render.TargetOpenClaw, []string{".agents", "skills", "my-skill"}},
 	}
 	for _, c := range cases {
 		got, err := InstallPath(c.target, "my-skill", opts)
@@ -201,6 +203,8 @@ func TestInstallPathUserAllTargets(t *testing.T) {
 		{render.TargetClaude, []string{".claude", "skills", "my-skill"}},
 		{render.TargetCodex, []string{".agents", "skills", "my-skill"}},
 		{render.TargetHermes, []string{".hermes", "skills", "symaira", "my-skill"}},
+		{render.TargetAntigravity, []string{".gemini", "antigravity-cli", "skills", "my-skill"}},
+		{render.TargetOpenClaw, []string{".openclaw", "skills", "my-skill"}},
 	}
 	for _, c := range cases {
 		got, err := InstallPath(c.target, "my-skill", opts)
@@ -232,6 +236,8 @@ func TestTargetDir(t *testing.T) {
 		{render.TargetClaude, filepath.Join(home, ".claude", "skills")},
 		{render.TargetCodex, filepath.Join(home, ".agents", "skills")},
 		{render.TargetHermes, filepath.Join(home, ".hermes", "skills", "symaira")},
+		{render.TargetAntigravity, filepath.Join(home, ".gemini", "antigravity-cli", "skills")},
+		{render.TargetOpenClaw, filepath.Join(home, ".openclaw", "skills")},
 	}
 
 	for _, c := range cases {

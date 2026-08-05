@@ -20,10 +20,12 @@ import (
 type Target string
 
 const (
-	TargetOpenCode Target = "opencode"
-	TargetClaude   Target = "claude"
-	TargetCodex    Target = "codex"
-	TargetHermes   Target = "hermes"
+	TargetOpenCode    Target = "opencode"
+	TargetClaude      Target = "claude"
+	TargetCodex       Target = "codex"
+	TargetHermes      Target = "hermes"
+	TargetAntigravity Target = "antigravity"
+	TargetOpenClaw    Target = "openclaw"
 )
 
 // DefaultTargets returns the list of all registered target names.
@@ -125,6 +127,42 @@ var Targets = []TargetSpec{
 			}
 			return filepath.Join(home, ".hermes", "skills", "symaira")
 		},
+	},
+	{
+		Name:        TargetAntigravity,
+		DisplayName: "Antigravity",
+		BinaryName:  "agy",
+		ConfigDir: func(home, project string, scope Scope) string {
+			if scope == ScopeProject && project != "" {
+				return filepath.Join(project, ".agents")
+			}
+			return filepath.Join(home, ".gemini", "antigravity-cli")
+		},
+		SkillRoot: func(home, project string, scope Scope) string {
+			if scope == ScopeProject && project != "" {
+				return filepath.Join(project, ".agents", "skills")
+			}
+			return filepath.Join(home, ".gemini", "antigravity-cli", "skills")
+		},
+		Quirks: "Global skills live in ~/.gemini/antigravity-cli/skills (docs: antigravity.google/docs/skills); workspace skills share <project>/.agents/skills with Codex/OpenClaw",
+	},
+	{
+		Name:        TargetOpenClaw,
+		DisplayName: "OpenClaw",
+		BinaryName:  "openclaw",
+		ConfigDir: func(home, project string, scope Scope) string {
+			if scope == ScopeProject && project != "" {
+				return filepath.Join(project, ".agents")
+			}
+			return filepath.Join(home, ".openclaw")
+		},
+		SkillRoot: func(home, project string, scope Scope) string {
+			if scope == ScopeProject && project != "" {
+				return filepath.Join(project, ".agents", "skills")
+			}
+			return filepath.Join(home, ".openclaw", "skills")
+		},
+		Quirks: "Managed skills load from ~/.openclaw/skills (default state dir, docs: docs.openclaw.ai/tools/skills); also reads ~/.agents/skills and <workspace>/skills",
 	},
 }
 

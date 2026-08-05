@@ -368,7 +368,7 @@ func newRenderCmd() *cobra.Command {
 			return printRenderResults(cmd, results, jsonOut)
 		},
 	}
-	cmd.Flags().StringVar(&targetName, "target", "all", "Target harness: all, opencode, claude, codex, hermes")
+	cmd.Flags().StringVar(&targetName, "target", "all", "Target harness: all, opencode, claude, codex, hermes, antigravity, openclaw")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Render output directory")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	cmd.Flags().StringVar(&profileName, "profile", "", "Render all skills from a context profile")

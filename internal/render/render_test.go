@@ -413,7 +413,7 @@ enabled = true
 }
 
 func TestParseTarget(t *testing.T) {
-	valid := []Target{TargetOpenCode, TargetClaude, TargetCodex, TargetHermes}
+	valid := []Target{TargetOpenCode, TargetClaude, TargetCodex, TargetHermes, TargetAntigravity, TargetOpenClaw}
 	for _, target := range valid {
 		got, err := ParseTarget(string(target))
 		if err != nil {

@@ -34,9 +34,16 @@ The resolved install paths are derived from the per-target name (which may
 differ from the fixture's source name via target aliases) and the target's
 contract in `internal/install.InstallPath`:
 
-| Target   | Global install path                          | Project install path                   |
-|----------|----------------------------------------------|----------------------------------------|
-| opencode | ~/.config/opencode/skills/<name>             | <project>/.opencode/skills/<name>      |
-| claude   | ~/.claude/skills/<name>                      | <project>/.claude/skills/<name>        |
-| codex    | ~/.agents/skills/<name>                      | <project>/.agents/skills/<name>        |
-| hermes   | ~/.hermes/skills/symaira/<name>              | <project>/.hermes/skills/<name>        |
+| Target      | Global install path                          | Project install path                   |
+|-------------|----------------------------------------------|----------------------------------------|
+| opencode    | ~/.config/opencode/skills/<name>             | <project>/.opencode/skills/<name>      |
+| claude      | ~/.claude/skills/<name>                      | <project>/.claude/skills/<name>        |
+| codex       | ~/.agents/skills/<name>                      | <project>/.agents/skills/<name>        |
+| hermes      | ~/.hermes/skills/symaira/<name>              | <project>/.hermes/skills/<name>        |
+| antigravity | ~/.gemini/antigravity-cli/skills/<name>      | <project>/.agents/skills/<name>        |
+| openclaw    | ~/.openclaw/skills/<name>                    | <project>/.agents/skills/<name>        |
+
+Antigravity and OpenClaw global paths follow their official docs
+(antigravity.google/docs/skills and docs.openclaw.ai/tools/skills); both
+harnesses also read `<project>/.agents/skills` for workspace/project skills,
+the same directory Codex uses at project scope.

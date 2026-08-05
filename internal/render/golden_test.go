@@ -30,6 +30,10 @@ func expectedInstallPath(target Target, name string) string {
 		return ".agents/skills/" + name
 	case TargetHermes:
 		return ".hermes/skills/symaira/" + name
+	case TargetAntigravity:
+		return ".gemini/antigravity-cli/skills/" + name
+	case TargetOpenClaw:
+		return ".openclaw/skills/" + name
 	default:
 		panic("unknown target: " + string(target))
 	}
@@ -46,6 +50,10 @@ func expectedProjectInstallPath(target Target, name string) string {
 		return ".agents/skills/" + name
 	case TargetHermes:
 		return ".hermes/skills/" + name
+	case TargetAntigravity:
+		return ".agents/skills/" + name
+	case TargetOpenClaw:
+		return ".agents/skills/" + name
 	default:
 		panic("unknown target: " + string(target))
 	}
@@ -96,6 +104,20 @@ func TestGoldenRender(t *testing.T) {
 			goldenDir:       filepath.Join("testdata", "golden", "hermes"),
 			expectedGlobal:  ".hermes/skills/symaira/golden-fixture",
 			expectedProject: ".hermes/skills/golden-fixture",
+		},
+		{
+			target:          TargetAntigravity,
+			expectedName:    "golden-fixture",
+			goldenDir:       filepath.Join("testdata", "golden", "antigravity"),
+			expectedGlobal:  ".gemini/antigravity-cli/skills/golden-fixture",
+			expectedProject: ".agents/skills/golden-fixture",
+		},
+		{
+			target:          TargetOpenClaw,
+			expectedName:    "golden-fixture",
+			goldenDir:       filepath.Join("testdata", "golden", "openclaw"),
+			expectedGlobal:  ".openclaw/skills/golden-fixture",
+			expectedProject: ".agents/skills/golden-fixture",
 		},
 	}
 
