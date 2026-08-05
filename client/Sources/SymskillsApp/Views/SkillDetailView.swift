@@ -229,7 +229,9 @@ private struct TargetRow: View {
     @State private var isHarnessEnabled: Bool = true
     @State private var actionMessage: String?
     @State private var isError: Bool = false
-    
+    @State private var showAdoptConfirm: Bool = false
+    @State private var conflictPath: String = ""
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -299,6 +301,18 @@ private struct TargetRow: View {
         }
         .padding(16)
         .glassmorphicPanel(addCorners: false)
+        .confirmationDialog(
+            "A skill not managed by symskills is already installed here.",
+            isPresented: $showAdoptConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Adopt and Replace") {
+                Task { await installTarget(force: true) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("\(conflictPath)\n\nThe existing skill will be moved to a backup directory under ~/.local/share/symskills/backups, not deleted.")
+        }
         .task {
             // Check if this target is explicitly configured in manifest
             if let targetCfg = bundle.manifest.targets?[target] {
@@ -345,16 +359,34 @@ private struct TargetRow: View {
         }
     }
     
-    private func installTarget() async {
+    private func installTarget(force: Bool = false) async {
         do {
             actionMessage = nil
             isError = false
-            let res = try await runner.install(path: path, target: target, scope: scope, mode: mode)
-            actionMessage = "Installed: \(res.name) at \(res.path)"
+            let res = try await runner.install(path: path, target: target, scope: scope, mode: mode, force: force)
+            if let backup = res.backupPath {
+                actionMessage = "Installed: \(res.name) at \(res.path)\nPrevious unmanaged skill backed up to \(backup)"
+            } else {
+                actionMessage = "Installed: \(res.name) at \(res.path)"
+            }
         } catch {
+            // An unmanaged skill at the destination is a recoverable conflict,
+            // not a dead end: offer to adopt it instead of only reporting it.
+            if !force, CLICommandRunner.isUnmanagedConflict(error) {
+                conflictPath = unmanagedPath(from: error.localizedDescription)
+                showAdoptConfirm = true
+                return
+            }
             isError = true
             actionMessage = "Install failed: \(error.localizedDescription)"
         }
+    }
+
+    /// Pulls the destination path out of the CLI's conflict message so the
+    /// confirmation dialog can name exactly what is about to be replaced.
+    private func unmanagedPath(from message: String) -> String {
+        guard let range = message.range(of: "unmanaged skill at ") else { return message }
+        return String(message[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     private func uninstallTarget() async {

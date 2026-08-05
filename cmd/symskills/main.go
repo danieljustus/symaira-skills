@@ -464,7 +464,7 @@ func newDiffCmd() *cobra.Command {
 
 func newInstallCmd() *cobra.Command {
 	var targetName, output, scopeName, modeName, profileName string
-	var jsonOut, dryRun bool
+	var jsonOut, dryRun, force bool
 	cmd := &cobra.Command{
 		Use:   "install [skill-dir]",
 		Short: "Render and install a skill or profile into a supported harness",
@@ -482,7 +482,7 @@ func newInstallCmd() *cobra.Command {
 			if out == "" {
 				out = cfg.RenderDir
 			}
-			opts := install.Options{Scope: render.Scope(scopeName), Mode: install.Mode(modeName), DryRun: dryRun}
+			opts := install.Options{Scope: render.Scope(scopeName), Mode: install.Mode(modeName), DryRun: dryRun, Force: force}
 			if profileName != "" {
 				if len(args) > 0 {
 					return exitcodes.Wrap(fmt.Errorf("skill-dir is not used with --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "install profile")
@@ -512,12 +512,16 @@ func newInstallCmd() *cobra.Command {
 				return printJSON(cmd, result)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s %s at %s\n", result.Action, result.Name, result.Path)
+			if result.BackupPath != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "previous unmanaged skill moved to %s\n", result.BackupPath)
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&targetName, "target", string(render.TargetOpenCode), "Target harness")
 	cmd.Flags().StringVar(&scopeName, "scope", string(render.ScopeUser), "Install scope: user or project")
 	cmd.Flags().StringVar(&modeName, "mode", string(install.ModeSymlink), "Install mode: symlink or copy")
+	cmd.Flags().BoolVar(&force, "force", false, "Adopt an unmanaged skill at the target path, moving the existing one to a backup directory")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Render output directory")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Plan install without writing")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
@@ -548,6 +552,9 @@ func installProfile(cmd *cobra.Command, cfg *config.Config, output string, targe
 	}
 	for _, result := range results {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s %s at %s\n", result.Action, result.Name, result.Path)
+		if result.BackupPath != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "previous unmanaged skill moved to %s\n", result.BackupPath)
+		}
 	}
 	return nil
 }

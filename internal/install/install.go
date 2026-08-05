@@ -39,6 +39,10 @@ type Options struct {
 	Scope      render.Scope `json:"scope"`
 	Mode       Mode         `json:"mode"`
 	DryRun     bool         `json:"dry_run"`
+	// Force adopts a destination that was not installed by symskills. The
+	// existing directory is moved to a backup location instead of being
+	// deleted, so a hand-written skill is never lost silently.
+	Force bool `json:"force"`
 }
 
 type Result struct {
@@ -47,6 +51,9 @@ type Result struct {
 	Name   string        `json:"name"`
 	Path   string        `json:"path"`
 	Mode   Mode          `json:"mode"`
+	// BackupPath is set when --force adopted an unmanaged destination and
+	// moved it aside.
+	BackupPath string `json:"backup_path,omitempty"`
 }
 
 type Marker struct {
@@ -76,13 +83,34 @@ func Install(item RenderedSkill, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	result := Result{Action: "installed", Target: item.Target, Name: item.Name, Path: dest, Mode: opts.Mode}
+	// When the harness skills directory is itself a symlink into the render
+	// cache, dest and the rendered source are the same location. Removing dest
+	// would delete the very content we are about to link to, so treat this as
+	// already installed and only refresh the marker.
+	same, err := sameLocation(dest, item.Path)
+	if err != nil {
+		return Result{}, err
+	}
+	if same {
+		result.Action = "current"
+		if opts.DryRun {
+			result.Action = "planned"
+			return result, nil
+		}
+		if err := os.WriteFile(filepath.Join(item.Path, markerFile), markerBytes(item, opts.Mode), 0o644); err != nil {
+			return Result{}, err
+		}
+		return result, nil
+	}
 	if opts.DryRun {
 		result.Action = "planned"
 		return result, nil
 	}
-	if err := ensureManagedOrAbsent(dest); err != nil {
+	backup, err := prepareDest(dest, opts)
+	if err != nil {
 		return Result{}, err
 	}
+	result.BackupPath = backup
 	if err := os.WriteFile(filepath.Join(item.Path, markerFile), markerBytes(item, opts.Mode), 0o644); err != nil {
 		return Result{}, err
 	}
@@ -103,6 +131,82 @@ func Install(item RenderedSkill, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	return result, nil
+}
+
+// sameLocation reports whether dest and src denote the same directory once
+// symlinked path components are resolved. dest itself is deliberately not
+// followed: a dest symlink pointing at src is a normal, already-done install,
+// whereas a dest whose *parent* resolves into src's directory is the dangerous
+// case this guards.
+func sameLocation(dest, src string) (bool, error) {
+	srcReal, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	destParent, err := filepath.EvalSymlinks(filepath.Dir(dest))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return filepath.Join(destParent, filepath.Base(dest)) == srcReal, nil
+}
+
+// prepareDest clears the way for an install. Without opts.Force it only
+// verifies that dest is absent or symskills-managed. With opts.Force an
+// unmanaged dest is moved to a backup directory and its path returned.
+func prepareDest(dest string, opts Options) (string, error) {
+	err := ensureManagedOrAbsent(dest)
+	if err == nil || !opts.Force {
+		return "", err
+	}
+	st, lerr := os.Lstat(dest)
+	if lerr != nil {
+		return "", lerr
+	}
+	// A symlink holds no content of its own; drop it and leave its target alone.
+	if st.Mode()&os.ModeSymlink != 0 {
+		return "", os.Remove(dest)
+	}
+	backup, berr := backupPath(dest, opts)
+	if berr != nil {
+		return "", berr
+	}
+	if err := os.MkdirAll(filepath.Dir(backup), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.Rename(dest, backup); err != nil {
+		return "", fmt.Errorf("backing up unmanaged skill at %s: %w", dest, err)
+	}
+	return backup, nil
+}
+
+// backupPath returns a collision-free location outside every harness directory,
+// so the moved-aside skill is not picked up as a skill by any agent.
+func backupPath(dest string, opts Options) (string, error) {
+	home := opts.HomeDir
+	if home == "" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+	}
+	base := filepath.Join(home, ".local", "share", "symskills", "backups",
+		fmt.Sprintf("%s-%s", filepath.Base(dest), time.Now().UTC().Format("20060102T150405Z")))
+	path := base
+	for i := 1; ; i++ {
+		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+			return path, nil
+		} else if err != nil {
+			return "", err
+		}
+		path = fmt.Sprintf("%s-%d", base, i)
+	}
 }
 
 func ensureManagedOrAbsent(path string) error {

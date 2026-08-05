@@ -144,6 +144,13 @@ public struct InstallResult: Codable, Equatable, Sendable {
     public let name: String
     public let path: String
     public let mode: String
+    /// Set when a forced install adopted an unmanaged skill and moved it aside.
+    public let backupPath: String?
+
+    enum CodingKeys: String, CodingKey {
+        case action, target, name, path, mode
+        case backupPath = "backup_path"
+    }
 }
 
 public struct Change: Codable, Identifiable, Equatable, Sendable {
