@@ -928,7 +928,7 @@ func newDiscoverCmd() *cobra.Command {
 				return err
 			}
 			if jsonOutput {
-				return printJSON(cmd, map[string]any{"candidates": candidates})
+				return printJSON(cmd, map[string]any{"schema_version": 1, "candidates": candidates})
 			}
 			if len(candidates) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No skill candidates discovered.")

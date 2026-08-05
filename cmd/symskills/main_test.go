@@ -1453,12 +1453,16 @@ func TestDiscoverCommand(t *testing.T) {
 		t.Fatalf("discover failed: %v, stderr: %s", err, stderr)
 	}
 	var resp struct {
-		Candidates []struct {
+		SchemaVersion int `json:"schema_version"`
+		Candidates    []struct {
 			DisplayName string `json:"display_name"`
 		} `json:"candidates"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
 		t.Fatalf("unmarshal json: %v, stdout: %s", err, stdout)
+	}
+	if resp.SchemaVersion != 1 {
+		t.Fatalf("expected schema_version 1, got %d", resp.SchemaVersion)
 	}
 	if len(resp.Candidates) != 1 {
 		t.Fatalf("expected 1 candidate, got %d", len(resp.Candidates))
