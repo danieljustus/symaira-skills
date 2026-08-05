@@ -4,7 +4,6 @@ package discover
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -240,12 +239,4 @@ func computeSourceID(path string) string {
 	h.Write([]byte{0})
 	h.Write(content)
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))[:16]
-}
-
-func FormatJSON(candidates []Candidate) (string, error) {
-	data, err := json.MarshalIndent(candidates, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
 }

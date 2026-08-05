@@ -24,7 +24,6 @@
 package harness
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -202,12 +201,4 @@ func isManagedSkill(path string) bool {
 		}
 	}
 	return false
-}
-
-func FormatJSON(statuses []Status) (string, error) {
-	data, err := json.MarshalIndent(statuses, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
 }

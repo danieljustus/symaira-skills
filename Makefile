@@ -1,7 +1,7 @@
 .PHONY: build test lint fmt-check clean smoke
 
 build:
-	CGO_ENABLED=0 go build -o symskills ./cmd/symskills
+	CGO_ENABLED=0 go build -ldflags "-X main.version=$(shell git describe --tags --always --dirty)" -o symskills ./cmd/symskills
 
 test:
 	CGO_ENABLED=0 go test -race ./...
