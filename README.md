@@ -1,5 +1,8 @@
 # symaira-skills
 
+[![CI](https://img.shields.io/github/actions/workflow/status/danieljustus/symaira-skills/ci.yml)](https://github.com/danieljustus/symaira-skills/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/danieljustus/symaira-skills)](https://github.com/danieljustus/symaira-skills/releases)
+
 `symskills` is a local-first SSOT manager for Agent Skills. It lets users keep one portable skill source and render/install harness-specific variants for OpenCode, Claude Code, Codex, and Hermes.
 
 The repository ships empty. It contains the tool, schema conventions, and test fixtures only. Users bring their own skill repositories.
@@ -13,6 +16,8 @@ Currently supported targets: OpenCode, Claude Code, Codex, and Hermes.
 ## Why
 
 Most modern agent harnesses can consume a `SKILL.md`-style bundle, but they disagree on discovery paths, optional metadata, invocation policies, and install workflows. `symskills` keeps the portable source in one place and generates normal harness-readable skill folders.
+
+Hand-copying skill folders into each harness works until it doesn't: the discovery paths differ (`~/.config/opencode/skills` vs `~/.claude/skills` vs `~/.agents/skills` vs `~/.hermes/skills/...`), metadata conventions diverge, and every edit has to be re-synced by hand — with drift. `symskills` replaces that manual loop with a single canonical source that is validated once and rendered/installed per target, so a fix lands everywhere at once.
 
 ## Install From Source
 
@@ -39,6 +44,14 @@ symskills install --target opencode ~/.local/share/symskills/library/my-skill
 ```
 
 Use `--json` on inspect/list/validate/render/install-style commands for machine-readable output.
+
+Sample output (your library will differ):
+
+```console
+$ symskills list
+NAME          VERSION   TARGETS           SOURCE
+repo-review   1.0.0     opencode,claude   https://example.test/repo-review
+```
 
 ## Skill Source Layout
 
