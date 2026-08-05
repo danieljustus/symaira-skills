@@ -17,7 +17,7 @@ Currently supported targets: OpenCode, Claude Code, Codex, and Hermes.
 
 Most modern agent harnesses can consume a `SKILL.md`-style bundle, but they disagree on discovery paths, optional metadata, invocation policies, and install workflows. `symskills` keeps the portable source in one place and generates normal harness-readable skill folders.
 
-Hand-copying skill folders into each harness works until it doesn't: the discovery paths differ (`~/.config/opencode/skills` vs `~/.claude/skills` vs `~/.agents/skills` vs `~/.hermes/skills/...`), metadata conventions diverge, and every edit has to be re-synced by hand — with drift. `symskills` replaces that manual loop with a single canonical source that is validated once and rendered/installed per target, so a fix lands everywhere at once.
+Hand-copying skill folders into each harness works until it doesn't: the discovery paths differ (`~/.config/opencode/skills` vs `~/.claude/skills` vs `~/.agents/skills` vs `~/.hermes/skills/...` vs `~/.gemini/antigravity-cli/skills` vs `~/.openclaw/skills`), metadata conventions diverge, and every edit has to be re-synced by hand — with drift. `symskills` replaces that manual loop with a single canonical source that is validated once and rendered/installed per target, so a fix lands everywhere at once.
 
 ## Install From Source
 
@@ -70,6 +70,8 @@ my-skill/
     claude/
     codex/
     hermes/
+    antigravity/
+    openclaw/
 ```
 
 `SKILL.md` is the canonical portable source. `symskills.toml` enables target-specific aliases and install/render preferences:
@@ -161,6 +163,14 @@ Default user install paths:
 | Claude Code | `~/.claude/skills/<name>` |
 | Codex | `~/.agents/skills/<name>` |
 | Hermes | `~/.hermes/skills/symaira/<name>` |
+| Antigravity | `~/.gemini/antigravity-cli/skills/<name>` |
+| OpenClaw | `~/.openclaw/skills/<name>` |
+
+Antigravity and OpenClaw paths follow their official docs
+(antigravity.google/docs/skills, docs.openclaw.ai/tools/skills). At project
+scope both harnesses read `<project>/.agents/skills` — the same workspace
+skills directory Codex uses — so project-scope installs for those three
+targets converge on one directory, exactly as the harnesses themselves do.
 
 ## MCP Tools
 

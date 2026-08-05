@@ -524,8 +524,8 @@ func TestSkillsRenderPlanProfile(t *testing.T) {
 		t.Fatalf("parse result: %v", err)
 	}
 
-	if len(rendered) != 4 {
-		t.Fatalf("expected 4 rendered targets, got %d", len(rendered))
+	if len(rendered) != 6 {
+		t.Fatalf("expected 6 rendered targets, got %d", len(rendered))
 	}
 	for _, item := range rendered {
 		if item.Name != "test-skill" {
@@ -648,8 +648,8 @@ func TestSkillsRenderPlanProfileDryRun(t *testing.T) {
 		t.Fatalf("parse result: %v", err)
 	}
 
-	if len(planned) != 4 {
-		t.Fatalf("expected 4 planned targets, got %d", len(planned))
+	if len(planned) != 6 {
+		t.Fatalf("expected 6 planned targets, got %d", len(planned))
 	}
 	for _, item := range planned {
 		if item.Name != "test-skill" {
@@ -1289,8 +1289,8 @@ func TestSkillsTargetsStatusMCP(t *testing.T) {
 	if err := parseText(resp.Result.Content[0].Text, &data); err != nil {
 		t.Fatalf("parse text: %v", err)
 	}
-	if len(data.Targets) != 4 {
-		t.Fatalf("expected 4 target statuses, got %d", len(data.Targets))
+	if len(data.Targets) != 6 {
+		t.Fatalf("expected 6 target statuses, got %d", len(data.Targets))
 	}
 }
 

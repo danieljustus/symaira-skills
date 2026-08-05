@@ -1379,8 +1379,8 @@ func TestTargetsCommand(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
 		t.Fatalf("unmarshal json: %v, stdout: %s", err, stdout)
 	}
-	if len(resp.Targets) != 4 {
-		t.Fatalf("expected 4 targets, got %d", len(resp.Targets))
+	if len(resp.Targets) != 6 {
+		t.Fatalf("expected 6 targets, got %d", len(resp.Targets))
 	}
 }
 
