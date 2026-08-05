@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,10 +23,49 @@ func runCmd(t *testing.T, homeDir string, args ...string) (string, string, error
 }
 
 func TestMainCmd(t *testing.T) {
-	oldArgs := os.Args
-	defer func() { os.Args = oldArgs }()
-	os.Args = []string{"symskills", "version"}
-	main()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	code := runMain(newRootCmd("test-version"), []string{"version"})
+	_ = w.Close()
+	os.Stderr = oldStderr
+	_, _ = io.ReadAll(r)
+	if code != 0 {
+		t.Fatalf("expected exit code 0 for version command, got %d", code)
+	}
+}
+
+func TestRunMainErrorPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	code := runMain(newRootCmd("test-version"), []string{"nonexistent-command"})
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = oldStderr
+	stderr, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if code == 0 {
+		t.Fatal("expected nonzero exit code for unknown command")
+	}
+	if !strings.Contains(string(stderr), "symskills:") {
+		t.Errorf("expected 'symskills:' error prefix on stderr, got %q", string(stderr))
+	}
 }
 
 func TestInitCommand(t *testing.T) {
@@ -595,10 +635,72 @@ func TestServeCommand(t *testing.T) {
 	home := t.TempDir()
 	_, _, _ = runCmd(t, home, "init")
 
-	// Serve without stdio (should fail)
-	_, _, err := runCmd(t, home, "serve")
-	if err == nil {
-		t.Fatal("expected serve without --stdio to fail")
+	// stdio is the only transport: `serve` must work without the flag, and
+	// `serve --stdio` must remain accepted for backward compatibility with
+	// existing MCP client configs. stdout carries only JSON-RPC frames.
+	for _, args := range [][]string{{"serve"}, {"serve", "--stdio"}} {
+		req := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}` + "\n"
+
+		stdinR, stdinW, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdoutR, stdoutW, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		oldStdin, oldStdout := os.Stdin, os.Stdout
+		os.Stdin, os.Stdout = stdinR, stdoutW
+
+		var cmdErr error
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			cmd := newRootCmd("test-version")
+			cmd.SetArgs(args)
+			cmdErr = cmd.Execute()
+		}()
+
+		if _, err := stdinW.WriteString(req); err != nil {
+			t.Fatal(err)
+		}
+		if err := stdinW.Close(); err != nil {
+			t.Fatal(err)
+		}
+		<-done
+
+		if err := stdoutW.Close(); err != nil {
+			t.Fatal(err)
+		}
+		stdout, err := io.ReadAll(stdoutR)
+		os.Stdin, os.Stdout = oldStdin, oldStdout
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if cmdErr != nil {
+			t.Fatalf("serve %v failed: %v", args, cmdErr)
+		}
+		var resp struct {
+			JSONRPC string `json:"jsonrpc"`
+			ID      int    `json:"id"`
+			Result  struct {
+				ServerInfo struct {
+					Name string `json:"name"`
+				} `json:"serverInfo"`
+			} `json:"result"`
+		}
+		// The whole stdout stream must parse as a single JSON-RPC frame:
+		// any diagnostic line on stdout would break this assertion.
+		if err := json.Unmarshal(stdout, &resp); err != nil {
+			t.Fatalf("serve %v: stdout is not a clean JSON-RPC frame: %v; got %q", args, err, stdout)
+		}
+		if resp.JSONRPC != "2.0" || resp.ID != 1 {
+			t.Fatalf("serve %v: unexpected JSON-RPC frame: %q", args, stdout)
+		}
+		if resp.Result.ServerInfo.Name != "symskills" {
+			t.Fatalf("serve %v: unexpected server name in %q", args, stdout)
+		}
 	}
 }
 
@@ -1282,6 +1384,31 @@ func TestTargetsCommand(t *testing.T) {
 	}
 }
 
+func TestTargetsCommandHumanReadable(t *testing.T) {
+	home := t.TempDir()
+
+	// Default user scope: human-readable lines, exit code 0.
+	stdout, stderr, err := runCmd(t, home, "targets")
+	if err != nil {
+		t.Fatalf("targets failed: %v, stderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "Target:") {
+		t.Errorf("expected 'Target:' line, got: %q", stdout)
+	}
+	if !strings.Contains(stdout, "Status:") || !strings.Contains(stdout, "Setup Hint:") {
+		t.Errorf("expected status/setup-hint lines, got: %q", stdout)
+	}
+
+	// Project scope branch.
+	stdout, stderr, err = runCmd(t, home, "targets", "--scope=project")
+	if err != nil {
+		t.Fatalf("targets --scope=project failed: %v, stderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "Target:") {
+		t.Errorf("expected project-scope output, got: %q", stdout)
+	}
+}
+
 func TestDiscoverCommand(t *testing.T) {
 	home := t.TempDir()
 	skillDir := filepath.Join(home, "my-skill")
@@ -1307,5 +1434,38 @@ func TestDiscoverCommand(t *testing.T) {
 	}
 	if len(resp.Candidates) != 1 {
 		t.Fatalf("expected 1 candidate, got %d", len(resp.Candidates))
+	}
+}
+
+func TestDiscoverCommandHumanReadable(t *testing.T) {
+	home := t.TempDir()
+	skillDir := filepath.Join(home, "my-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	skillMD := "---\nname: my-skill\ndescription: Test skill\n---\n\nBody"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMD), 0644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	// Candidate branch: human-readable lines, exit code 0.
+	stdout, stderr, err := runCmd(t, home, "discover", skillDir)
+	if err != nil {
+		t.Fatalf("discover failed: %v, stderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "(unmanaged") || !strings.Contains(stdout, "my-skill") {
+		t.Errorf("expected unmanaged my-skill line, got: %q", stdout)
+	}
+	if !strings.Contains(stdout, "Location:") {
+		t.Errorf("expected 'Location:' line, got: %q", stdout)
+	}
+
+	// Empty branch: no harness roots in a fresh HOME, no explicit paths.
+	stdout, stderr, err = runCmd(t, home, "discover")
+	if err != nil {
+		t.Fatalf("discover (empty) failed: %v, stderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "No skill candidates discovered.") {
+		t.Errorf("expected empty-discovery message, got: %q", stdout)
 	}
 }

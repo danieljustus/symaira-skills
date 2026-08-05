@@ -3,6 +3,7 @@ package render
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -244,6 +245,45 @@ enabled = false
 	}
 }
 
+// TestRenderAllComputesSourceTreeHashOncePerBundle proves the source tree is
+// walked exactly once per bundle, regardless of how many targets render.
+func TestRenderAllComputesSourceTreeHashOncePerBundle(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: hash-once
+description: Hash once per bundle test.
+---
+Body.
+`)
+	writeFile(t, filepath.Join(root, "scripts", "tool.sh"), "#!/bin/sh\necho ok\n")
+	writeFile(t, filepath.Join(root, "references", "guide.md"), "# Guide\n")
+
+	bundle, err := skill.LoadBundle(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	origWalk := walkBundleDir
+	walks := 0
+	walkBundleDir = func(root string, fn fs.WalkDirFunc) error {
+		walks++
+		return origWalk(root, fn)
+	}
+	defer func() { walkBundleDir = origWalk }()
+
+	out := filepath.Join(t.TempDir(), "rendered")
+	results, errs := RenderAll(bundle, out, []Target{TargetOpenCode, TargetClaude, TargetCodex, TargetHermes})
+	if len(errs) != 0 {
+		t.Fatalf("RenderAll errors: %v", errs)
+	}
+	if len(results) != 4 {
+		t.Fatalf("want 4 rendered targets, got %d", len(results))
+	}
+	if walks != 1 {
+		t.Fatalf("source tree walked %d times for 4 targets; want exactly 1 (once per bundle)", walks)
+	}
+}
+
 // --- Tests for #82: profile alias rendering ---
 
 func TestRenderTargetProfileAliasOverridesTargetConfigAlias(t *testing.T) {
@@ -480,9 +520,10 @@ func TestWriteRenderedPreservesInstallMarker(t *testing.T) {
 	writeFile(t, filepath.Join(root, "SKILL.md"), "---\nname: marker-test\ndescription: test\n---\n# Body\n")
 
 	item := Rendered{Name: "marker-test", SkillMD: "---\nname: marker-test\ndescription: test\n---\n# Body\n"}
+	treeHash := sourceTreeHash(root)
 
 	// First render: must write the marker with source_hash added.
-	if err := writeRendered(root, tmp, item, TargetOpenCode); err != nil {
+	if err := writeRendered(root, tmp, item, TargetOpenCode, treeHash); err != nil {
 		t.Fatalf("writeRendered (first): %v", err)
 	}
 
@@ -505,7 +546,7 @@ func TestWriteRenderedPreservesInstallMarker(t *testing.T) {
 	firstModTime := skillMDInfo.ModTime()
 
 	// Second render: source is unchanged, should skip the rewrite (#87).
-	if err := writeRendered(root, tmp, item, TargetOpenCode); err != nil {
+	if err := writeRendered(root, tmp, item, TargetOpenCode, treeHash); err != nil {
 		t.Fatalf("writeRendered (second): %v", err)
 	}
 
@@ -652,11 +693,12 @@ func TestWriteRenderedSkipsUnchangedSource(t *testing.T) {
 	writeFile(t, filepath.Join(root, "scripts", "tool.sh"), "#!/bin/sh\necho ok\n")
 
 	item := Rendered{Name: "skip-test", SkillMD: "---\nname: skip-test\ndescription: test\n---\n# Body\n"}
+	treeHash := sourceTreeHash(root)
 
 	out := t.TempDir()
 
 	// First render: fresh output.
-	if err := writeRendered(root, out, item, TargetOpenCode); err != nil {
+	if err := writeRendered(root, out, item, TargetOpenCode, treeHash); err != nil {
 		t.Fatalf("first writeRendered: %v", err)
 	}
 
@@ -667,7 +709,7 @@ func TestWriteRenderedSkipsUnchangedSource(t *testing.T) {
 	}
 
 	// Second render: source unchanged, must skip.
-	if err := writeRendered(root, out, item, TargetOpenCode); err != nil {
+	if err := writeRendered(root, out, item, TargetOpenCode, treeHash); err != nil {
 		t.Fatalf("second writeRendered: %v", err)
 	}
 
@@ -701,7 +743,7 @@ func TestWriteRenderedFullRenderOnChangedSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writeRendered(root, out, item1, TargetOpenCode); err != nil {
+	if err := writeRendered(root, out, item1, TargetOpenCode, sourceTreeHash(root)); err != nil {
 		t.Fatal(err)
 	}
 	modTimes := fileModTimes(t, out)
@@ -720,7 +762,7 @@ func TestWriteRenderedFullRenderOnChangedSource(t *testing.T) {
 	}
 
 	// Second render: source changed, must trigger full rewrite.
-	if err := writeRendered(root, out, item2, TargetOpenCode); err != nil {
+	if err := writeRendered(root, out, item2, TargetOpenCode, sourceTreeHash(root)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -756,7 +798,7 @@ func TestWriteRenderedFullRenderOnMissingMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := writeRendered(root, out, item, TargetOpenCode); err != nil {
+	if err := writeRendered(root, out, item, TargetOpenCode, sourceTreeHash(root)); err != nil {
 		t.Fatalf("writeRendered with missing marker: %v", err)
 	}
 
