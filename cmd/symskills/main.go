@@ -37,12 +37,43 @@ func main() {
 // tested without terminating the test process via os.Exit.
 func runMain(root *cobra.Command, args []string) int {
 	slog.SetDefault(logkit.NewFromEnv("symskills"))
+	if err := registerCustomTargets(); err != nil {
+		fmt.Fprintln(os.Stderr, "symskills:", exitcodes.FormatCLIError(err))
+		return int(exitcodes.ExitCodeFromError(err))
+	}
 	root.SetArgs(args)
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "symskills:", exitcodes.FormatCLIError(err))
 		return int(exitcodes.ExitCodeFromError(err))
 	}
 	return 0
+}
+
+// registerCustomTargets loads the user config and registers any declared
+// custom harness targets into the render registry. A missing config file is
+// not an error (defaults apply); a malformed or colliding custom target is.
+func registerCustomTargets() error {
+	targets, err := config.LoadTargets()
+	if err != nil {
+		return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindConfig, "load config")
+	}
+	specs := make([]render.CustomTargetSpec, 0, len(targets))
+	for _, t := range targets {
+		specs = append(specs, render.CustomTargetSpec{
+			Name:             t.Name,
+			DisplayName:      t.DisplayName,
+			BinaryName:       t.BinaryName,
+			SkillRootUser:    t.SkillRootUser,
+			SkillRootProject: t.SkillRootProject,
+			MetadataFile:     t.MetadataFile,
+			MetadataTemplate: t.MetadataTemplate,
+			OverlayDir:       t.OverlayDir,
+		})
+	}
+	if err := render.RegisterCustomTargets(specs); err != nil {
+		return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindConfig, "register custom targets")
+	}
+	return nil
 }
 
 func newRootCmd(version string) *cobra.Command {

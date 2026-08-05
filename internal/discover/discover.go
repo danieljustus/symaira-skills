@@ -52,7 +52,7 @@ func DiscoverScanned(opts Options) ([]Candidate, error) {
 	}
 
 	var roots []scanRoot
-	for _, desc := range harness.Descriptors {
+	for _, desc := range harness.Descriptors() {
 		rPath := desc.SkillRoot(opts.HomeDir, opts.ProjectDir, opts.Scope)
 		roots = append(roots, scanRoot{
 			path:   rPath,
