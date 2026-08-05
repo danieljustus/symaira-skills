@@ -29,11 +29,20 @@ import (
 var version = "0.1.9"
 
 func main() {
+	os.Exit(runMain(newRootCmd(version), os.Args[1:]))
+}
+
+// runMain executes the root command with the given arguments and returns the
+// process exit code. It is separated from main so the error path can be
+// tested without terminating the test process via os.Exit.
+func runMain(root *cobra.Command, args []string) int {
 	slog.SetDefault(logkit.NewFromEnv("symskills"))
-	if err := newRootCmd(version).Execute(); err != nil {
+	root.SetArgs(args)
+	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "symskills:", exitcodes.FormatCLIError(err))
-		os.Exit(int(exitcodes.ExitCodeFromError(err)))
+		return int(exitcodes.ExitCodeFromError(err))
 	}
+	return 0
 }
 
 func newRootCmd(version string) *cobra.Command {
