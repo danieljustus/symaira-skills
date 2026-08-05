@@ -329,6 +329,9 @@ func RenderAll(bundle *skill.Bundle, outDir string, targets []Target, meta ...Re
 	if len(targets) == 0 {
 		targets = DefaultTargets()
 	}
+	// The source tree hash is a per-bundle property; compute it once and
+	// reuse it for every target instead of walking the tree per target.
+	treeHash := sourceTreeHash(bundle.Root)
 	var rendered []Rendered
 	var errs []error
 	for _, target := range targets {
@@ -338,7 +341,7 @@ func RenderAll(bundle *skill.Bundle, outDir string, targets []Target, meta ...Re
 			continue
 		}
 		dst := filepath.Join(outDir, string(target), item.Name)
-		if err := writeRendered(bundle.Root, dst, item, target); err != nil {
+		if err := writeRendered(bundle.Root, dst, item, target, treeHash); err != nil {
 			errs = append(errs, fmt.Errorf("target %s: %w", target, err))
 			continue
 		}
@@ -348,13 +351,18 @@ func RenderAll(bundle *skill.Bundle, outDir string, targets []Target, meta ...Re
 	return rendered, errs
 }
 
-// sourceHash computes a content hash of the source tree plus rendered output
-// so re-renders with unchanged input can be skipped.
-func sourceHash(bundleRoot, renderedSkillMD string, target Target) string {
+// walkBundleDir is the tree walker used by sourceTreeHash. It is a variable
+// so tests can count invocations and prove the tree is walked exactly once
+// per bundle.
+var walkBundleDir = filepath.WalkDir
+
+// sourceTreeHash computes a content hash of the source tree (support files
+// only; SKILL.md and symskills.toml are part of the rendered body). It is
+// expensive — it reads every support file — so callers must compute it once
+// per bundle and reuse the result across targets.
+func sourceTreeHash(bundleRoot string) string {
 	h := sha256.New()
-	// Walk all files in the source tree, hashing support files (excluding
-	// SKILL.md and symskills.toml which are part of the rendered body).
-	_ = filepath.WalkDir(bundleRoot, func(path string, d os.DirEntry, err error) error {
+	_ = walkBundleDir(bundleRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -381,15 +389,24 @@ func sourceHash(bundleRoot, renderedSkillMD string, target Target) string {
 		h.Write([]byte{0})
 		return nil
 	})
-	// Include the rendered SKILL.md content and the target in the hash.
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// sourceHash combines the once-per-bundle source tree hash with the
+// per-target rendered SKILL.md content and target name so re-renders with
+// unchanged input can be skipped.
+func sourceHash(treeHash, renderedSkillMD string, target Target) string {
+	h := sha256.New()
+	h.Write([]byte(treeHash))
+	h.Write([]byte{0})
 	h.Write([]byte(renderedSkillMD))
 	h.Write([]byte{0})
 	h.Write([]byte(target))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func writeRendered(root, dst string, item Rendered, target Target) error {
-	sh := sourceHash(root, item.SkillMD, target)
+func writeRendered(root, dst string, item Rendered, target Target, treeHash string) error {
+	sh := sourceHash(treeHash, item.SkillMD, target)
 
 	// Read any existing marker so we can preserve install-time fields and
 	// check whether the output is already current.
