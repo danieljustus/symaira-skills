@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/danieljustus/symaira-skills/internal/fsutil"
@@ -19,6 +20,11 @@ import (
 )
 
 const markerFile = ".symskills.json"
+
+// MarkerSchemaVersion is the .symskills.json marker format version this
+// build understands and writes. docs/marker-protocol.md is the contract the
+// macOS client is bound by; bump only on incompatible marker changes.
+const MarkerSchemaVersion = 1
 
 type Mode string
 
@@ -57,13 +63,14 @@ type Result struct {
 }
 
 type Marker struct {
-	ManagedBy  string        `json:"managed_by"`
-	Target     render.Target `json:"target"`
-	Name       string        `json:"name"`
-	RenderedAt string        `json:"rendered_at"`
-	Mode       Mode          `json:"mode"`
-	Installed  string        `json:"installed"`
-	SourceHash string        `json:"source_hash,omitempty"`
+	SchemaVersion int           `json:"schema_version,omitempty"`
+	ManagedBy     string        `json:"managed_by"`
+	Target        render.Target `json:"target"`
+	Name          string        `json:"name"`
+	RenderedAt    string        `json:"rendered_at"`
+	Mode          Mode          `json:"mode"`
+	Installed     string        `json:"installed"`
+	SourceHash    string        `json:"source_hash,omitempty"`
 }
 
 type Change struct {
@@ -97,7 +104,7 @@ func Install(item RenderedSkill, opts Options) (Result, error) {
 			result.Action = "planned"
 			return result, nil
 		}
-		if err := os.WriteFile(filepath.Join(item.Path, markerFile), markerBytes(item, opts.Mode), 0o644); err != nil {
+		if err := writeMarker(item.Path, item, opts.Mode); err != nil {
 			return Result{}, err
 		}
 		return result, nil
@@ -111,26 +118,79 @@ func Install(item RenderedSkill, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	result.BackupPath = backup
-	if err := os.WriteFile(filepath.Join(item.Path, markerFile), markerBytes(item, opts.Mode), 0o644); err != nil {
+	if err := writeMarker(item.Path, item, opts.Mode); err != nil {
 		return Result{}, err
 	}
-	if err := os.RemoveAll(dest); err != nil {
-		return Result{}, err
-	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return Result{}, err
-	}
-	if opts.Mode == ModeSymlink {
-		if err := os.Symlink(item.Path, dest); err == nil {
-			return result, nil
-		}
-		opts.Mode = ModeCopy
-		result.Mode = ModeCopy
-	}
-	if err := copyDir(item.Path, dest); err != nil {
+	if err := installAtomic(item, dest, &opts, &result); err != nil {
 		return Result{}, err
 	}
 	return result, nil
+}
+
+// osRename is a seam for fault-injection tests of the atomic swap sequence.
+var osRename = os.Rename
+
+// installAtomic materializes the rendered skill into a sibling dest.tmp-<pid>
+// staging path and swaps it into place with two renames, so dest is never
+// observed empty or half-written. The symlink fast path gets the same
+// treatment: the link is created at the staging path and a failure falls
+// back to a staged copy; dest is only ever replaced by the final rename. On
+// any error the partial staging path is removed and the previous install
+// (held at dest.bak) is restored.
+func installAtomic(item RenderedSkill, dest string, opts *Options, result *Result) error {
+	tmp := dest + ".tmp-" + strconv.Itoa(os.Getpid())
+	if err := os.RemoveAll(tmp); err != nil {
+		return fmt.Errorf("clearing stale staging path: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	if opts.Mode == ModeSymlink {
+		if err := os.Symlink(item.Path, tmp); err != nil {
+			// Symlinks are unavailable here; fall back to a staged copy.
+			opts.Mode = ModeCopy
+			result.Mode = ModeCopy
+		}
+	}
+	if opts.Mode == ModeCopy {
+		if err := copyDir(item.Path, tmp); err != nil {
+			_ = os.RemoveAll(tmp)
+			return err
+		}
+	}
+	if err := swapIntoPlace(dest, tmp); err != nil {
+		_ = os.RemoveAll(tmp)
+		return err
+	}
+	return nil
+}
+
+// swapIntoPlace atomically replaces dest with the materialized tmp staging
+// path: dest is renamed aside to dest.bak, tmp is promoted to dest, and the
+// backup is deleted. When the promotion fails, the previous install is
+// restored from dest.bak.
+func swapIntoPlace(dest, tmp string) error {
+	bak := dest + ".bak"
+	if err := os.RemoveAll(bak); err != nil {
+		return err
+	}
+	moved := false
+	if _, err := os.Lstat(dest); err == nil {
+		if err := osRename(dest, bak); err != nil {
+			return fmt.Errorf("moving previous install aside: %w", err)
+		}
+		moved = true
+	}
+	if err := osRename(tmp, dest); err != nil {
+		if moved {
+			if rerr := osRename(bak, dest); rerr != nil {
+				return fmt.Errorf("publishing install: %w (restoring previous install: %v)", err, rerr)
+			}
+		}
+		return fmt.Errorf("publishing install: %w", err)
+	}
+	_ = os.RemoveAll(bak)
+	return nil
 }
 
 // sameLocation reports whether dest and src denote the same directory once
@@ -230,12 +290,12 @@ func ensureManagedOrAbsent(path string) error {
 		if _, err := os.Stat(filepath.Join(target, markerFile)); err != nil {
 			return fmt.Errorf("refusing to overwrite unmanaged skill at %s", path)
 		}
-		return nil
+		return checkMarkerWritable(filepath.Join(target, markerFile))
 	}
 	if _, err := os.Stat(filepath.Join(path, markerFile)); err != nil {
 		return fmt.Errorf("refusing to overwrite unmanaged skill at %s", path)
 	}
-	return nil
+	return checkMarkerWritable(filepath.Join(path, markerFile))
 }
 
 func markerBytes(item RenderedSkill, mode Mode) []byte {
@@ -251,16 +311,63 @@ func markerBytes(item RenderedSkill, mode Mode) []byte {
 		}
 	}
 	m := Marker{
-		ManagedBy:  "symskills",
-		Target:     item.Target,
-		Name:       item.Name,
-		RenderedAt: item.Path,
-		Mode:       mode,
-		Installed:  time.Now().UTC().Format(time.RFC3339),
-		SourceHash: srcHash,
+		SchemaVersion: MarkerSchemaVersion,
+		ManagedBy:     "symskills",
+		Target:        item.Target,
+		Name:          item.Name,
+		RenderedAt:    item.Path,
+		Mode:          mode,
+		Installed:     time.Now().UTC().Format(time.RFC3339),
+		SourceHash:    srcHash,
 	}
 	data, _ := json.MarshalIndent(m, "", "  ")
 	return append(data, '\n')
+}
+
+// markerSchemaVersion returns the schema_version of a serialized marker.
+// Markers written before versioning existed carry no field; those are
+// treated as version 1.
+func markerSchemaVersion(data []byte) (int, error) {
+	var m struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return 0, fmt.Errorf("parsing marker: %w", err)
+	}
+	if m.SchemaVersion == 0 {
+		return MarkerSchemaVersion, nil
+	}
+	return m.SchemaVersion, nil
+}
+
+// checkMarkerWritable refuses to overwrite a marker written by a newer
+// symskills or macOS client than this build understands.
+func checkMarkerWritable(path string) error {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	v, err := markerSchemaVersion(data)
+	if err != nil {
+		return fmt.Errorf("reading marker %s: %w", path, err)
+	}
+	if v > MarkerSchemaVersion {
+		return fmt.Errorf("refusing to overwrite marker %s: schema_version %d is newer than supported version %d", path, v, MarkerSchemaVersion)
+	}
+	return nil
+}
+
+// writeMarker writes the current marker into the rendered tree after
+// refusing to clobber a marker from a newer schema version.
+func writeMarker(dir string, item RenderedSkill, mode Mode) error {
+	markerPath := filepath.Join(dir, markerFile)
+	if err := checkMarkerWritable(markerPath); err != nil {
+		return err
+	}
+	return os.WriteFile(markerPath, markerBytes(item, mode), 0o644)
 }
 
 func InstallPath(target render.Target, name string, opts Options) (string, error) {
