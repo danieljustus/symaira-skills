@@ -20,10 +20,12 @@ import (
 type Target string
 
 const (
-	TargetOpenCode Target = "opencode"
-	TargetClaude   Target = "claude"
-	TargetCodex    Target = "codex"
-	TargetHermes   Target = "hermes"
+	TargetOpenCode    Target = "opencode"
+	TargetClaude      Target = "claude"
+	TargetCodex       Target = "codex"
+	TargetHermes      Target = "hermes"
+	TargetAntigravity Target = "antigravity"
+	TargetOpenClaw    Target = "openclaw"
 )
 
 // DefaultTargets returns the list of all registered target names.
@@ -52,7 +54,85 @@ type TargetSpec struct {
 	BinaryName  string
 	ConfigDir   func(home, project string, scope Scope) string
 	SkillRoot   func(home, project string, scope Scope) string
-	Quirks      string
+	// OverlayDir overrides the overlay directory name (defaults to the
+	// target name). Used by user-defined targets.
+	OverlayDir string
+	// MetadataFile is a relative output path inside the rendered skill
+	// (e.g. "agents/openai.yaml") written verbatim from MetadataTemplate.
+	MetadataFile     string
+	MetadataTemplate string
+	Quirks           string
+}
+
+// CustomTargetSpec is the declarative shape for user-defined targets loaded
+// from config. Paths may be absolute or relative to home.
+type CustomTargetSpec struct {
+	Name             string
+	DisplayName      string
+	BinaryName       string
+	SkillRootUser    string
+	SkillRootProject string
+	MetadataFile     string
+	MetadataTemplate string
+	OverlayDir       string
+}
+
+// RegisterCustomTargets appends user-defined targets to the registry. It
+// returns an error when a custom name collides with a built-in target or with
+// an already-registered custom target. Skill roots must be non-empty.
+func RegisterCustomTargets(specs []CustomTargetSpec) error {
+	for _, c := range specs {
+		name := Target(c.Name)
+		if name == "" {
+			return fmt.Errorf("custom target: name is required")
+		}
+		if _, ok := LookupSpec(name); ok {
+			return fmt.Errorf("custom target %q collides with an existing target", c.Name)
+		}
+		if c.SkillRootUser == "" {
+			return fmt.Errorf("custom target %q: skill_root_user is required", c.Name)
+		}
+		userRoot := filepath.Clean(c.SkillRootUser)
+		projectRoot := userRoot
+		if c.SkillRootProject != "" {
+			projectRoot = filepath.Clean(c.SkillRootProject)
+		}
+		displayName := c.DisplayName
+		if displayName == "" {
+			displayName = c.Name
+		}
+		Targets = append(Targets, TargetSpec{
+			Name:        name,
+			DisplayName: displayName,
+			BinaryName:  c.BinaryName,
+			ConfigDir: func(home, project string, scope Scope) string {
+				if scope == ScopeProject && project != "" {
+					return filepath.Dir(projectRoot)
+				}
+				return filepath.Dir(userRoot)
+			},
+			SkillRoot: func(home, project string, scope Scope) string {
+				if scope == ScopeProject && project != "" {
+					return projectRoot
+				}
+				return userRoot
+			},
+			OverlayDir:       c.OverlayDir,
+			MetadataFile:     c.MetadataFile,
+			MetadataTemplate: c.MetadataTemplate,
+			Quirks:           "User-defined target from config.toml",
+		})
+	}
+	return nil
+}
+
+// overlayDir returns the overlay directory name for a target, defaulting to
+// the target name.
+func overlayDir(target Target) string {
+	if spec, ok := LookupSpec(target); ok && spec.OverlayDir != "" {
+		return spec.OverlayDir
+	}
+	return string(target)
 }
 
 // Targets is the single registry of all supported harness targets.
@@ -125,6 +205,42 @@ var Targets = []TargetSpec{
 			}
 			return filepath.Join(home, ".hermes", "skills", "symaira")
 		},
+	},
+	{
+		Name:        TargetAntigravity,
+		DisplayName: "Antigravity",
+		BinaryName:  "agy",
+		ConfigDir: func(home, project string, scope Scope) string {
+			if scope == ScopeProject && project != "" {
+				return filepath.Join(project, ".agents")
+			}
+			return filepath.Join(home, ".gemini", "antigravity-cli")
+		},
+		SkillRoot: func(home, project string, scope Scope) string {
+			if scope == ScopeProject && project != "" {
+				return filepath.Join(project, ".agents", "skills")
+			}
+			return filepath.Join(home, ".gemini", "antigravity-cli", "skills")
+		},
+		Quirks: "Global skills live in ~/.gemini/antigravity-cli/skills (docs: antigravity.google/docs/skills); workspace skills share <project>/.agents/skills with Codex/OpenClaw",
+	},
+	{
+		Name:        TargetOpenClaw,
+		DisplayName: "OpenClaw",
+		BinaryName:  "openclaw",
+		ConfigDir: func(home, project string, scope Scope) string {
+			if scope == ScopeProject && project != "" {
+				return filepath.Join(project, ".agents")
+			}
+			return filepath.Join(home, ".openclaw")
+		},
+		SkillRoot: func(home, project string, scope Scope) string {
+			if scope == ScopeProject && project != "" {
+				return filepath.Join(project, ".agents", "skills")
+			}
+			return filepath.Join(home, ".openclaw", "skills")
+		},
+		Quirks: "Managed skills load from ~/.openclaw/skills (default state dir, docs: docs.openclaw.ai/tools/skills); also reads ~/.agents/skills and <workspace>/skills",
 	},
 }
 
@@ -270,7 +386,7 @@ func overlayText(root string, target Target, defaultName, configured string) (st
 		}
 		return readOptional(filepath.Join(root, clean))
 	}
-	return readOptional(filepath.Join(root, "overlays", string(target), defaultName))
+	return readOptional(filepath.Join(root, "overlays", overlayDir(target), defaultName))
 }
 
 func readOptional(path string) (string, error) {
@@ -285,7 +401,7 @@ func readOptional(path string) (string, error) {
 }
 
 func applyFrontmatterOverlay(root string, target Target, fm *skill.Frontmatter) error {
-	path := filepath.Join(root, "overlays", string(target), "frontmatter.toml")
+	path := filepath.Join(root, "overlays", overlayDir(target), "frontmatter.toml")
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
@@ -329,6 +445,9 @@ func RenderAll(bundle *skill.Bundle, outDir string, targets []Target, meta ...Re
 	if len(targets) == 0 {
 		targets = DefaultTargets()
 	}
+	// The source tree hash is a per-bundle property; compute it once and
+	// reuse it for every target instead of walking the tree per target.
+	treeHash := sourceTreeHash(bundle.Root)
 	var rendered []Rendered
 	var errs []error
 	for _, target := range targets {
@@ -338,7 +457,7 @@ func RenderAll(bundle *skill.Bundle, outDir string, targets []Target, meta ...Re
 			continue
 		}
 		dst := filepath.Join(outDir, string(target), item.Name)
-		if err := writeRendered(bundle.Root, dst, item, target); err != nil {
+		if err := writeRendered(bundle.Root, dst, item, target, treeHash); err != nil {
 			errs = append(errs, fmt.Errorf("target %s: %w", target, err))
 			continue
 		}
@@ -348,13 +467,18 @@ func RenderAll(bundle *skill.Bundle, outDir string, targets []Target, meta ...Re
 	return rendered, errs
 }
 
-// sourceHash computes a content hash of the source tree plus rendered output
-// so re-renders with unchanged input can be skipped.
-func sourceHash(bundleRoot, renderedSkillMD string, target Target) string {
+// walkBundleDir is the tree walker used by sourceTreeHash. It is a variable
+// so tests can count invocations and prove the tree is walked exactly once
+// per bundle.
+var walkBundleDir = filepath.WalkDir
+
+// sourceTreeHash computes a content hash of the source tree (support files
+// only; SKILL.md and symskills.toml are part of the rendered body). It is
+// expensive — it reads every support file — so callers must compute it once
+// per bundle and reuse the result across targets.
+func sourceTreeHash(bundleRoot string) string {
 	h := sha256.New()
-	// Walk all files in the source tree, hashing support files (excluding
-	// SKILL.md and symskills.toml which are part of the rendered body).
-	_ = filepath.WalkDir(bundleRoot, func(path string, d os.DirEntry, err error) error {
+	_ = walkBundleDir(bundleRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -381,15 +505,24 @@ func sourceHash(bundleRoot, renderedSkillMD string, target Target) string {
 		h.Write([]byte{0})
 		return nil
 	})
-	// Include the rendered SKILL.md content and the target in the hash.
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// sourceHash combines the once-per-bundle source tree hash with the
+// per-target rendered SKILL.md content and target name so re-renders with
+// unchanged input can be skipped.
+func sourceHash(treeHash, renderedSkillMD string, target Target) string {
+	h := sha256.New()
+	h.Write([]byte(treeHash))
+	h.Write([]byte{0})
 	h.Write([]byte(renderedSkillMD))
 	h.Write([]byte{0})
 	h.Write([]byte(target))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func writeRendered(root, dst string, item Rendered, target Target) error {
-	sh := sourceHash(root, item.SkillMD, target)
+func writeRendered(root, dst string, item Rendered, target Target, treeHash string) error {
+	sh := sourceHash(treeHash, item.SkillMD, target)
 
 	// Read any existing marker so we can preserve install-time fields and
 	// check whether the output is already current.
@@ -426,10 +559,8 @@ func writeRendered(root, dst string, item Rendered, target Target) error {
 	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), []byte(item.SkillMD), 0o644); err != nil {
 		return err
 	}
-	if target == TargetCodex {
-		if err := writeCodexMetadata(dst, item); err != nil {
-			return err
-		}
+	if err := writeTargetMetadata(dst, target, item); err != nil {
+		return err
 	}
 	if err := os.WriteFile(markerPath, markerBytes, 0o644); err != nil {
 		return err
@@ -458,6 +589,32 @@ policy:
 		return err
 	}
 	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+// writeTargetMetadata writes per-target metadata files into a rendered skill.
+// Built-in targets with a fixed metadata contract (Codex) keep their
+// generated file; user-defined targets may declare a metadata file whose
+// content is taken verbatim from a template file.
+func writeTargetMetadata(dst string, target Target, item Rendered) error {
+	if target == TargetCodex {
+		return writeCodexMetadata(dst, item)
+	}
+	spec, ok := LookupSpec(target)
+	if !ok || spec.MetadataFile == "" {
+		return nil
+	}
+	if spec.MetadataTemplate == "" {
+		return fmt.Errorf("target %s: metadata_file %q requires metadata_template", target, spec.MetadataFile)
+	}
+	content, err := os.ReadFile(spec.MetadataTemplate)
+	if err != nil {
+		return fmt.Errorf("target %s: read metadata template: %w", target, err)
+	}
+	path := filepath.Join(dst, spec.MetadataFile)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, content, 0o644)
 }
 
 // ParseTarget converts a user-facing target string.

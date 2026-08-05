@@ -9,11 +9,6 @@ on:
     - cron: '0 6 * * 1'
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '**.md'
-      - 'LICENSE'
-      - '.github/ISSUE_TEMPLATE/**'
   push:
     branches: [main]
     paths-ignore:

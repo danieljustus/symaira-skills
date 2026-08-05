@@ -105,6 +105,12 @@ enabled = true
 
 [targets.hermes]
 enabled = true
+
+[targets.antigravity]
+enabled = true
+
+[targets.openclaw]
+enabled = true
 TOML_EOF
 
     ok "Fixture skill: $FIXTURE_DIR"
@@ -121,11 +127,13 @@ install_fixture() {
 skill_root_for() {
     local target="$1"
     case "$target" in
-        opencode) echo "$TEMP_HOME/.config/opencode/skills/$SKILL_NAME" ;;
-        claude)   echo "$TEMP_HOME/.claude/skills/$SKILL_NAME" ;;
-        codex)    echo "$TEMP_HOME/.agents/skills/$SKILL_NAME" ;;
-        hermes)   echo "$TEMP_HOME/.hermes/skills/symaira/$SKILL_NAME" ;;
-        *)        echo "" ;;
+        opencode)    echo "$TEMP_HOME/.config/opencode/skills/$SKILL_NAME" ;;
+        claude)      echo "$TEMP_HOME/.claude/skills/$SKILL_NAME" ;;
+        codex)       echo "$TEMP_HOME/.agents/skills/$SKILL_NAME" ;;
+        hermes)      echo "$TEMP_HOME/.hermes/skills/symaira/$SKILL_NAME" ;;
+        antigravity) echo "$TEMP_HOME/.gemini/antigravity-cli/skills/$SKILL_NAME" ;;
+        openclaw)    echo "$TEMP_HOME/.openclaw/skills/$SKILL_NAME" ;;
+        *)           echo "" ;;
     esac
 }
 
@@ -221,6 +229,10 @@ main() {
     smoke_test_harness claude   "Claude Code" claude ANTHROPIC_API_KEY
     smoke_test_harness codex    Codex codex OPENAI_API_KEY
     smoke_test_harness hermes   Hermes hermes ANTHROPIC_API_KEY
+    # Antigravity authenticates via Google sign-in (no API-key env var), so
+    # the key var below is never set: the install path is still verified.
+    smoke_test_harness agy      Antigravity antigravity ANTIGRAVITY_API_KEY
+    smoke_test_harness openclaw OpenClaw openclaw OPENAI_API_KEY
 
     echo ""
     echo "============================================"

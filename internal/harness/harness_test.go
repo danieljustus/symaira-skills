@@ -29,8 +29,8 @@ func TestListStatusUserScope(t *testing.T) {
 		Scope:   render.ScopeUser,
 	})
 
-	if len(statuses) != len(Descriptors) {
-		t.Fatalf("expected %d statuses, got %d", len(Descriptors), len(statuses))
+	if len(statuses) != len(Descriptors()) {
+		t.Fatalf("expected %d statuses, got %d", len(Descriptors()), len(statuses))
 	}
 
 	var opencodeStatus *Status

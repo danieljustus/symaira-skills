@@ -62,15 +62,13 @@ type Descriptor struct {
 	SkillRoot   func(home, project string, scope render.Scope) string
 }
 
-// Descriptors returns the list of Descriptors derived from the target registry.
-// It is a variable so that external code can iterate over it; the values are
-// populated at init time from render.Targets.
-var Descriptors []Descriptor
-
-func init() {
-	Descriptors = make([]Descriptor, len(render.Targets))
+// Descriptors returns the list of Descriptors derived from the target
+// registry. It is computed on demand so user-defined targets registered at
+// runtime are included.
+func Descriptors() []Descriptor {
+	descs := make([]Descriptor, len(render.Targets))
 	for i, spec := range render.Targets {
-		Descriptors[i] = Descriptor{
+		descs[i] = Descriptor{
 			Target:      spec.Name,
 			DisplayName: spec.DisplayName,
 			BinaryName:  spec.BinaryName,
@@ -78,6 +76,7 @@ func init() {
 			SkillRoot:   spec.SkillRoot,
 		}
 	}
+	return descs
 }
 
 // ListStatus returns the harness inventory and readiness status for all supported targets.
@@ -91,8 +90,8 @@ func ListStatus(opts Options) []Status {
 		opts.Scope = render.ScopeUser
 	}
 
-	results := make([]Status, 0, len(Descriptors))
-	for _, desc := range Descriptors {
+	results := make([]Status, 0, len(Descriptors()))
+	for _, desc := range Descriptors() {
 		results = append(results, inspectTarget(desc, opts))
 	}
 	return results

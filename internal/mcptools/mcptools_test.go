@@ -524,8 +524,8 @@ func TestSkillsRenderPlanProfile(t *testing.T) {
 		t.Fatalf("parse result: %v", err)
 	}
 
-	if len(rendered) != 4 {
-		t.Fatalf("expected 4 rendered targets, got %d", len(rendered))
+	if len(rendered) != 6 {
+		t.Fatalf("expected 6 rendered targets, got %d", len(rendered))
 	}
 	for _, item := range rendered {
 		if item.Name != "test-skill" {
@@ -593,6 +593,143 @@ func TestSkillsInstallProfileDryRun(t *testing.T) {
 	}
 	if results[0].Name != "test-skill" {
 		t.Errorf("expected name 'test-skill', got %q", results[0].Name)
+	}
+}
+
+func TestSkillsRenderPlanProfileDryRun(t *testing.T) {
+	srv := mcpserver.New("symskills", "test")
+	tmpDir := t.TempDir()
+	libDir := filepath.Join(tmpDir, "lib")
+	profilesDir := filepath.Join(tmpDir, "profiles")
+	renderDir := filepath.Join(tmpDir, "render")
+	if err := os.MkdirAll(libDir, 0755); err != nil {
+		t.Fatalf("create lib dir: %v", err)
+	}
+	if err := os.MkdirAll(profilesDir, 0755); err != nil {
+		t.Fatalf("create profiles dir: %v", err)
+	}
+
+	skillDir := filepath.Join(libDir, "test-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("create skill dir: %v", err)
+	}
+	writeTestSkill(t, skillDir)
+	writeTestProfile(t, profilesDir, "test", "test-skill")
+
+	Register(srv, Options{LibraryDir: libDir, ProfilesDir: profilesDir, RenderDir: renderDir})
+
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"skills_render_plan","arguments":{"profile":"test","dry_run":true}}}` + "\n"
+	var out strings.Builder
+	if err := srv.ServeIO(context.Background(), strings.NewReader(req), &out); err != nil {
+		t.Fatalf("ServeIO: %v", err)
+	}
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Type string          `json:"type"`
+				Text json.RawMessage `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &resp); err != nil {
+		t.Fatalf("parse response %q: %v", out.String(), err)
+	}
+	if len(resp.Result.Content) == 0 {
+		t.Fatal("expected content in response")
+	}
+
+	var planned []struct {
+		Target string `json:"target"`
+		Name   string `json:"name"`
+		Path   string `json:"path"`
+	}
+	if err := parseText(resp.Result.Content[0].Text, &planned); err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+
+	if len(planned) != 6 {
+		t.Fatalf("expected 6 planned targets, got %d", len(planned))
+	}
+	for _, item := range planned {
+		if item.Name != "test-skill" {
+			t.Errorf("expected planned name 'test-skill', got %q", item.Name)
+		}
+		if !strings.HasPrefix(item.Path, renderDir) {
+			t.Errorf("expected planned path under render dir, got %q", item.Path)
+		}
+	}
+	// Dry-run must not create the render directory.
+	if _, err := os.Stat(renderDir); !os.IsNotExist(err) {
+		t.Errorf("dry-run created render dir at %s (err=%v)", renderDir, err)
+	}
+}
+
+func TestSkillsInstallProfileWrite(t *testing.T) {
+	srv := mcpserver.New("symskills", "test")
+	tmpDir := t.TempDir()
+	libDir := filepath.Join(tmpDir, "lib")
+	profilesDir := filepath.Join(tmpDir, "profiles")
+	renderDir := filepath.Join(tmpDir, "render")
+	if err := os.MkdirAll(libDir, 0755); err != nil {
+		t.Fatalf("create lib dir: %v", err)
+	}
+	if err := os.MkdirAll(profilesDir, 0755); err != nil {
+		t.Fatalf("create profiles dir: %v", err)
+	}
+
+	skillDir := filepath.Join(libDir, "test-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("create skill dir: %v", err)
+	}
+	writeTestSkill(t, skillDir)
+	writeTestProfile(t, profilesDir, "test", "test-skill")
+
+	Register(srv, Options{LibraryDir: libDir, ProfilesDir: profilesDir, RenderDir: renderDir, HomeDir: tmpDir})
+
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"skills_install","arguments":{"profile":"test","dry_run":false,"target":"opencode"}}}` + "\n"
+	var out strings.Builder
+	if err := srv.ServeIO(context.Background(), strings.NewReader(req), &out); err != nil {
+		t.Fatalf("ServeIO: %v", err)
+	}
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Type string          `json:"type"`
+				Text json.RawMessage `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &resp); err != nil {
+		t.Fatalf("parse response %q: %v", out.String(), err)
+	}
+	if len(resp.Result.Content) == 0 {
+		t.Fatal("expected content in response")
+	}
+
+	var results []struct {
+		Action string `json:"action"`
+		Name   string `json:"name"`
+		Path   string `json:"path"`
+	}
+	if err := parseText(resp.Result.Content[0].Text, &results); err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Action != "installed" {
+		t.Errorf("expected action 'installed', got %q", results[0].Action)
+	}
+	if results[0].Name != "test-skill" {
+		t.Errorf("expected name 'test-skill', got %q", results[0].Name)
+	}
+	// The write path must have produced an actual install (marker file).
+	marker := filepath.Join(results[0].Path, ".symskills.json")
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("expected install marker at %s: %v", marker, err)
 	}
 }
 
@@ -1152,8 +1289,8 @@ func TestSkillsTargetsStatusMCP(t *testing.T) {
 	if err := parseText(resp.Result.Content[0].Text, &data); err != nil {
 		t.Fatalf("parse text: %v", err)
 	}
-	if len(data.Targets) != 4 {
-		t.Fatalf("expected 4 target statuses, got %d", len(data.Targets))
+	if len(data.Targets) != 6 {
+		t.Fatalf("expected 6 target statuses, got %d", len(data.Targets))
 	}
 }
 
