@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/danieljustus/symaira-skills/internal/render"
 )
 
 func runCmd(t *testing.T, homeDir string, args ...string) (string, string, error) {
@@ -65,6 +67,32 @@ func TestRunMainErrorPath(t *testing.T) {
 	}
 	if !strings.Contains(string(stderr), "symskills:") {
 		t.Errorf("expected 'symskills:' error prefix on stderr, got %q", string(stderr))
+	}
+}
+
+func TestRegisterCustomTargetsFromConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfgDir := filepath.Join(home, ".config", "symskills")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := "[[targets]]\nname = \"configured-agent\"\nskill_root_user = \"/tmp/configured-agent/skills\"\n"
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	before := len(render.Targets)
+	defer func() { render.Targets = render.Targets[:before] }()
+	if err := registerCustomTargets(); err != nil {
+		t.Fatalf("registerCustomTargets: %v", err)
+	}
+	spec, ok := render.LookupSpec("configured-agent")
+	if !ok {
+		t.Fatal("configured custom target was not registered")
+	}
+	if got := spec.SkillRoot(home, "/project", render.ScopeUser); got != "/tmp/configured-agent/skills" {
+		t.Fatalf("configured target skill root = %q", got)
 	}
 }
 
