@@ -93,6 +93,10 @@ type Marker struct {
 	Mode          Mode          `json:"mode"`
 	Installed     string        `json:"installed"`
 	SourceHash    string        `json:"source_hash,omitempty"`
+	// AllowExecutable records whether the install preserved executable
+	// bits (--allow-executable or the manifest setting). Additive field;
+	// sync replays it so a re-install never silently strips bits.
+	AllowExecutable bool `json:"allow_executable,omitempty"`
 }
 
 type Change struct {
@@ -139,7 +143,7 @@ func Install(item RenderedSkill, opts Options) (Result, error) {
 			result.Action = "planned"
 			return result, nil
 		}
-		if err := writeMarker(item.Path, item, opts.Mode); err != nil {
+		if err := writeMarker(item.Path, item, opts.Mode, opts.AllowExecutable); err != nil {
 			return Result{}, err
 		}
 		if err := WriteBaseSnapshot(item.Path, item.Target, item.Name, opts); err != nil {
@@ -156,7 +160,7 @@ func Install(item RenderedSkill, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	result.BackupPath = backup
-	if err := writeMarker(item.Path, item, opts.Mode); err != nil {
+	if err := writeMarker(item.Path, item, opts.Mode, opts.AllowExecutable); err != nil {
 		return Result{}, err
 	}
 	if err := installAtomic(item, dest, &opts, &result); err != nil {
@@ -339,7 +343,7 @@ func ensureManagedOrAbsent(path string) error {
 	return checkMarkerWritable(filepath.Join(path, markerFile))
 }
 
-func markerBytes(item RenderedSkill, mode Mode) []byte {
+func markerBytes(item RenderedSkill, mode Mode, allowExecutable bool) []byte {
 	// Preserve source_hash from any existing marker so the render-cache
 	// freshness check survives install (#87).
 	var srcHash string
@@ -352,14 +356,15 @@ func markerBytes(item RenderedSkill, mode Mode) []byte {
 		}
 	}
 	m := Marker{
-		SchemaVersion: MarkerSchemaVersion,
-		ManagedBy:     "symskills",
-		Target:        item.Target,
-		Name:          item.Name,
-		RenderedAt:    item.Path,
-		Mode:          mode,
-		Installed:     time.Now().UTC().Format(time.RFC3339),
-		SourceHash:    srcHash,
+		SchemaVersion:   MarkerSchemaVersion,
+		ManagedBy:       "symskills",
+		Target:          item.Target,
+		Name:            item.Name,
+		RenderedAt:      item.Path,
+		Mode:            mode,
+		Installed:       time.Now().UTC().Format(time.RFC3339),
+		SourceHash:      srcHash,
+		AllowExecutable: allowExecutable,
 	}
 	data, _ := json.MarshalIndent(m, "", "  ")
 	return append(data, '\n')
@@ -403,12 +408,12 @@ func checkMarkerWritable(path string) error {
 
 // writeMarker writes the current marker into the rendered tree after
 // refusing to clobber a marker from a newer schema version.
-func writeMarker(dir string, item RenderedSkill, mode Mode) error {
+func writeMarker(dir string, item RenderedSkill, mode Mode, allowExecutable bool) error {
 	markerPath := filepath.Join(dir, markerFile)
 	if err := checkMarkerWritable(markerPath); err != nil {
 		return err
 	}
-	return os.WriteFile(markerPath, markerBytes(item, mode), 0o644)
+	return os.WriteFile(markerPath, markerBytes(item, mode, allowExecutable), 0o644)
 }
 
 func InstallPath(target render.Target, name string, opts Options) (string, error) {
