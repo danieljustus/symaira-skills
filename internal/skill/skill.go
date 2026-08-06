@@ -16,7 +16,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var skillNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+// skillNamePattern follows the agentskills specification: lowercase
+// alphanumeric segments joined by single hyphens — no consecutive, leading,
+// or trailing hyphens (e.g. "pdf--processing" and "pdf-" are invalid).
+var skillNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+
+// Size limits for portable skill bundles, fixed as a contract following the
+// agentskills specification rather than tuned per install.
+const (
+	// MaxNameLength caps the skill name in characters.
+	MaxNameLength = 64
+	// MaxDescriptionLength caps the frontmatter description in characters.
+	MaxDescriptionLength = 1024
+	// MaxBodyLength caps the SKILL.md markdown body in characters.
+	MaxBodyLength = 50000
+	// MaxResourceSize caps a single resource file in bytes. Executables only
+	// materialise under this size (reference implementation contract).
+	MaxResourceSize = 10 << 20 // 10 MiB
+)
 
 // Frontmatter is the portable SKILL.md metadata symskills understands.
 type Frontmatter struct {
@@ -42,6 +59,9 @@ type ManifestSkill struct {
 	Name    string `toml:"name" json:"name"`
 	Version string `toml:"version" json:"version"`
 	Source  string `toml:"source" json:"source"`
+	// AllowExecutable preserves executable bits on resource files during
+	// install instead of stripping them (default policy).
+	AllowExecutable bool `toml:"allow_executable" json:"allow_executable"`
 }
 
 // TargetConfig controls rendering and installation for one harness target.
@@ -56,12 +76,25 @@ type TargetConfig struct {
 	Metadata    map[string]string `toml:"metadata" json:"metadata"`
 }
 
+// Resource describes one non-SKILL.md file in a skill bundle. Path is
+// relative to the bundle root using forward slashes.
+type Resource struct {
+	Path       string `json:"path"`
+	Size       int64  `json:"size"`
+	Mode       string `json:"mode"`
+	Executable bool   `json:"executable"`
+}
+
 // Bundle is a loaded skill directory.
 type Bundle struct {
 	Root        string      `json:"root"`
 	Frontmatter Frontmatter `json:"frontmatter"`
 	Manifest    Manifest    `json:"manifest"`
 	Body        string      `json:"body"`
+	// Resources inventories every non-SKILL.md file in the bundle (relative
+	// path, size, mode, executable flag). Symlinked directories are not
+	// descended into; symlinked files are resolved to their target.
+	Resources []Resource `json:"resources"`
 }
 
 // Issue is one validation finding.
@@ -129,7 +162,69 @@ func LoadBundle(root string) (*Bundle, error) {
 		manifest.Skill.Version = fm.Version
 	}
 
-	return &Bundle{Root: abs, Frontmatter: fm, Manifest: manifest, Body: body}, nil
+	resources, err := loadResources(abs)
+	if err != nil {
+		return nil, fmt.Errorf("inventory bundle resources: %w", err)
+	}
+
+	return &Bundle{Root: abs, Frontmatter: fm, Manifest: manifest, Body: body, Resources: resources}, nil
+}
+
+// loadResources inventories every non-SKILL.md file under root: relative
+// path, size, permission mode, and executable flag. WalkDir order is
+// lexical, so the result is deterministic. .git directories are skipped to
+// match ImportSkill's copy semantics. Symlinked directories are not
+// descended into; symlinked files are resolved to their target so the
+// inventory reflects what install would materialize.
+func loadResources(root string) ([]Resource, error) {
+	resources := []Resource{}
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if rel == "SKILL.md" {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		size := info.Size()
+		perm := info.Mode().Perm()
+		executable := perm&0o111 != 0
+		if d.Type()&os.ModeSymlink != 0 {
+			// Resolve symlinked files to their target; a dangling or
+			// directory-targeted link is skipped.
+			target, err := os.Stat(path)
+			if err != nil || target.IsDir() {
+				return nil
+			}
+			size = target.Size()
+			perm = target.Mode().Perm()
+			executable = perm&0o111 != 0
+		}
+		resources = append(resources, Resource{
+			Path:       filepath.ToSlash(rel),
+			Size:       size,
+			Mode:       fmt.Sprintf("%04o", perm),
+			Executable: executable,
+		})
+		return nil
+	})
+	return resources, err
 }
 
 // UnmarshalYAML accepts scalar values and YAML string lists for fields that
@@ -275,8 +370,11 @@ func ValidateSkillName(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("skill name is required")
 	}
+	if len(name) > MaxNameLength {
+		return fmt.Errorf("skill name %q exceeds maximum length of %d characters", name, MaxNameLength)
+	}
 	if !skillNamePattern.MatchString(name) {
-		return fmt.Errorf("skill name %q must be a single lowercase alphanumeric-dash segment", name)
+		return fmt.Errorf("skill name %q must be a single lowercase alphanumeric-dash segment without consecutive, leading, or trailing hyphens", name)
 	}
 	return nil
 }
@@ -290,14 +388,37 @@ func Validate(bundle *Bundle) []Issue {
 	name := bundle.Frontmatter.Name
 	if strings.TrimSpace(name) == "" {
 		issues = append(issues, Issue{Code: "name_required", Severity: "error", Message: "frontmatter name is required", Path: "SKILL.md"})
-	} else if !skillNamePattern.MatchString(name) {
-		issues = append(issues, Issue{Code: "name_format", Severity: "error", Message: "name must use lowercase letters, numbers, and dashes", Path: "SKILL.md"})
+	} else {
+		if len(name) > MaxNameLength {
+			issues = append(issues, Issue{Code: "name_too_long", Severity: "error", Message: fmt.Sprintf("name exceeds maximum length of %d characters (actual: %d)", MaxNameLength, len(name)), Path: "SKILL.md"})
+		}
+		if !skillNamePattern.MatchString(name) {
+			issues = append(issues, Issue{Code: "name_format", Severity: "error", Message: "name must use lowercase letters, numbers, and single dashes (no consecutive, leading, or trailing dashes)", Path: "SKILL.md"})
+		}
+		// The agentskills specification requires the skill name to match the
+		// parent directory name, which is how the library layout stores
+		// bundles (library/<name>).
+		if filepath.Base(bundle.Root) != name {
+			issues = append(issues, Issue{Code: "name_dir_mismatch", Severity: "error", Message: fmt.Sprintf("frontmatter name %q must match the parent directory name %q", name, filepath.Base(bundle.Root)), Path: "SKILL.md"})
+		}
 	}
 	if strings.TrimSpace(bundle.Frontmatter.Description) == "" {
 		issues = append(issues, Issue{Code: "description_required", Severity: "error", Message: "frontmatter description is required", Path: "SKILL.md"})
+	} else if len(bundle.Frontmatter.Description) > MaxDescriptionLength {
+		issues = append(issues, Issue{Code: "description_too_long", Severity: "error", Message: fmt.Sprintf("frontmatter description exceeds maximum length of %d characters (actual: %d)", MaxDescriptionLength, len(bundle.Frontmatter.Description)), Path: "SKILL.md"})
 	}
 	if strings.TrimSpace(bundle.Body) == "" {
 		issues = append(issues, Issue{Code: "body_required", Severity: "error", Message: "SKILL.md body is empty", Path: "SKILL.md"})
+	} else if len(bundle.Body) > MaxBodyLength {
+		issues = append(issues, Issue{Code: "body_too_long", Severity: "warning", Message: fmt.Sprintf("SKILL.md body exceeds maximum length of %d characters (actual: %d)", MaxBodyLength, len(bundle.Body)), Path: "SKILL.md"})
+	}
+	for _, res := range bundle.Resources {
+		if res.Executable {
+			issues = append(issues, Issue{Code: "resource_executable", Severity: "warning", Message: "resource file is executable; install strips the executable bit unless --allow-executable (or the manifest setting) is set", Path: res.Path})
+		}
+		if res.Size > MaxResourceSize {
+			issues = append(issues, Issue{Code: "resource_too_large", Severity: "warning", Message: fmt.Sprintf("resource exceeds maximum size of %d bytes (actual: %d)", MaxResourceSize, res.Size), Path: res.Path})
+		}
 	}
 	for target, cfg := range bundle.Manifest.Targets {
 		if !cfg.Enabled {
