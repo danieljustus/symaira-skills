@@ -313,13 +313,11 @@ func ExtractRev(dir, rev, dst string) error {
 	dstAbs = filepath.Clean(dstAbs)
 	tr := tar.NewReader(&buf)
 	for {
-		// The extraction guards below (prefix check on the joined target,
-		// EvalSymlinks parent resolution, linkname checks) are covered by
-		// regression tests; CodeQL's taint model does not recognize the
-		// guard functions, so the two zip-slip queries are suppressed at
-		// their flagged sinks.
+		// Extraction is guarded by layered, regression-tested checks
+		// (prefix check on the joined target, EvalSymlinks parent
+		// resolution, absolute/dotdot linkname refusal) which CodeQL's
+		// taint model does not recognize.
 		// codeql[go/zipslip]
-		// codeql[go/unsafe-unzip-symlink]
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
 			return nil
@@ -370,6 +368,7 @@ func ExtractRev(dir, rev, dst string) error {
 				return fmt.Errorf("archive symlink %q escapes destination", hdr.Name)
 			}
 			_ = os.Remove(target)
+			// codeql[go/unsafe-unzip-symlink]
 			if err := os.Symlink(hdr.Linkname, target); err != nil {
 				return err
 			}
