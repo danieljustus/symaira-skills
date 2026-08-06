@@ -49,6 +49,17 @@ type Options struct {
 	// existing directory is moved to a backup location instead of being
 	// deleted, so a hand-written skill is never lost silently.
 	Force bool `json:"force"`
+	// AllowExecutable preserves executable bits on resource files instead
+	// of stripping them (the default install policy).
+	AllowExecutable bool `json:"allow_executable"`
+}
+
+// ResourceModeChange describes an executable-bit change applied (or planned)
+// to one resource file during install. Modes are octal strings like "0755".
+type ResourceModeChange struct {
+	Path string `json:"path"`
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 type Result struct {
@@ -60,6 +71,10 @@ type Result struct {
 	// BackupPath is set when --force adopted an unmanaged destination and
 	// moved it aside.
 	BackupPath string `json:"backup_path,omitempty"`
+	// ModeChanges lists every resource whose executable bit was stripped
+	// (or would be stripped in a dry run). Empty when AllowExecutable is
+	// set or the bundle has no executable resources.
+	ModeChanges []ResourceModeChange `json:"mode_changes,omitempty"`
 }
 
 type Marker struct {
@@ -90,6 +105,19 @@ func Install(item RenderedSkill, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	result := Result{Action: "installed", Target: item.Target, Name: item.Name, Path: dest, Mode: opts.Mode}
+	// Executable-bit policy: by default strip the executable bit from every
+	// resource before the tree is materialized (symlink or copy), so no
+	// executable file is planted into a harness directory. The changes are
+	// reported on the result; --allow-executable (or the manifest setting)
+	// preserves them. In a dry run nothing is modified, but the planned
+	// changes are still reported.
+	if !opts.AllowExecutable {
+		changes, err := stripExecutableBits(item.Path, opts.DryRun)
+		if err != nil {
+			return Result{}, fmt.Errorf("strip executable bits: %w", err)
+		}
+		result.ModeChanges = changes
+	}
 	// When the harness skills directory is itself a symlink into the render
 	// cache, dest and the rendered source are the same location. Removing dest
 	// would delete the very content we are about to link to, so treat this as
@@ -523,4 +551,45 @@ func fileHashes(root string) (map[string]string, error) {
 
 func copyDir(src, dst string) error {
 	return fsutil.CopyTree(src, dst, func(rel string, d os.DirEntry) bool { return false })
+}
+
+// stripExecutableBits removes the executable bits from every regular file
+// under root and returns the mode changes. With dryRun set it only reports
+// the changes that would be applied. Symlinks are left untouched (they are
+// resolved to regular copies by CopyTree, which then carry the target mode).
+func stripExecutableBits(root string, dryRun bool) ([]ResourceModeChange, error) {
+	var changes []ResourceModeChange
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		perm := info.Mode().Perm()
+		if perm&0o111 == 0 {
+			return nil
+		}
+		stripped := perm &^ 0o111
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		changes = append(changes, ResourceModeChange{
+			Path: filepath.ToSlash(rel),
+			From: fmt.Sprintf("%04o", perm),
+			To:   fmt.Sprintf("%04o", stripped),
+		})
+		if !dryRun {
+			if err := os.Chmod(path, stripped); err != nil {
+				return fmt.Errorf("strip executable bit from %s: %w", path, err)
+			}
+		}
+		return nil
+	})
+	return changes, err
 }
