@@ -286,3 +286,46 @@ func mustExtract(t *testing.T, dir, rev string) string {
 	}
 	return dst
 }
+
+// TestExtractRevRefusesEscapingSymlink guards the archive-extraction
+// traversal checks (CodeQL: unsanitized archive entry / symlink creation):
+// a tracked symlink whose linkname escapes the destination root must be
+// refused, never materialized.
+func TestExtractRevRefusesEscapingSymlink(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		linkname string
+	}{
+		{"absolute", "/etc"},
+		{"dotdot", "../../etc"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := makeSkillDir(t)
+			if _, err := Init(dir); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(dir, "SKILL.md"), "---\nname: evil\ndescription: x\n---\n")
+			if err := os.Symlink(tc.linkname, filepath.Join(dir, "escape")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Commit(dir, "add escaping symlink"); err != nil {
+				t.Fatal(err)
+			}
+			head, err := Head(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dst := t.TempDir()
+			err = ExtractRev(dir, head, dst)
+			if err == nil {
+				t.Fatalf("expected ExtractRev to refuse linkname %q", tc.linkname)
+			}
+			if !strings.Contains(err.Error(), "escapes destination") && !strings.Contains(err.Error(), "absolute or empty linkname") {
+				t.Fatalf("expected escape error for linkname %q, got: %v", tc.linkname, err)
+			}
+			if _, statErr := os.Lstat(filepath.Join(dst, "escape")); !os.IsNotExist(statErr) {
+				t.Fatalf("escaping symlink must not be materialized in dst")
+			}
+		})
+	}
+}
