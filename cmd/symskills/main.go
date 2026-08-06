@@ -100,6 +100,7 @@ func newRootCmd(version string) *cobra.Command {
 		newUninstallCmd(),
 		newStatusCmd(),
 		newSyncCmd(),
+		newPullCmd(),
 		newProfileCmd(),
 		newTargetsCmd(),
 		newDiscoverCmd(),
@@ -755,6 +756,11 @@ func newInstallCmd() *cobra.Command {
 				}
 				return exitcodes.Wrap(fmt.Errorf("target %s produced no render output", target), exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
 			}
+			lock, err := install.AcquirePullLock(target, rendered[0].Name, install.PullOptions{HomeDir: userHomeDir()})
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "lock skill")
+			}
+			defer lock.Release()
 			result, err := install.Install(install.RenderedSkill{Target: target, Name: rendered[0].Name, Path: rendered[0].Path}, opts)
 			logger := newEventLogger()
 			if err != nil {
@@ -786,6 +792,73 @@ func newInstallCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	cmd.Flags().BoolVar(&allowExecutable, "allow-executable", false, "Preserve executable bits on resource files instead of stripping them")
 	cmd.Flags().StringVar(&profileName, "profile", "", "Install all skills from a context profile")
+	return cmd
+}
+
+func newPullCmd() *cobra.Command {
+	var targetName, scopeName string
+	var dryRun, jsonOut, apply bool
+	cmd := &cobra.Command{
+		Use:   "pull <skill-name>",
+		Short: "Carry harness-side edits into the portable library staging area",
+		Long: `Compare one installed skill with its portable library source and stage
+harness-side edits for review. Overlay-produced body regions and frontmatter
+keys are refused rather than merged. Use --dry-run to print the complete plan
+without writing a pending tree.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target, err := render.ParseTarget(targetName)
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "parse target")
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			pullOpts := install.PullOptions{HomeDir: userHomeDir(), Scope: render.Scope(scopeName), LibraryDir: cfg.LibraryDir, BaseDir: cfg.BaseDir, Target: target, Name: args[0], DryRun: dryRun}
+			if apply {
+				if err := install.ApplyPending(pullOpts); err != nil {
+					return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "apply pending pull")
+				}
+				if jsonOut {
+					return printJSON(cmd, install.PullResult{Action: "applied", Target: target, Name: args[0]})
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "applied %s %s\n", target, args[0])
+				return nil
+			}
+			result, err := install.Pull(pullOpts)
+			if err != nil {
+				if len(result.Refusals) > 0 {
+					for _, refusal := range result.Refusals {
+						fmt.Fprintf(cmd.ErrOrStderr(), "refused: %s\\n", refusal)
+					}
+				}
+				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "pull")
+			}
+			if jsonOut {
+				return printJSON(cmd, result)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s %s\\n", result.Action, result.Name)
+			for _, change := range result.Changes {
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\\n", change.Status, change.Path)
+			}
+			if len(result.FrontmatterChanges) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "Frontmatter changes:")
+				for _, change := range result.FrontmatterChanges {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s (%s)\\n", change.Key, change.Reason)
+				}
+			}
+			if result.StagePath != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "pending: %s\\n", result.StagePath)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&targetName, "target", string(render.TargetOpenCode), "Target harness")
+	cmd.Flags().StringVar(&scopeName, "scope", string(render.ScopeUser), "Install scope: user or project")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the pull plan without writing")
+	cmd.Flags().BoolVar(&apply, "apply", false, "Promote an existing pending pull into the library")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	return cmd
 }
 
@@ -1116,7 +1189,13 @@ The three-way classification (#126) guards the write path:
 					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "failed", Error: msg})
 					continue
 				}
+				lock, lockErr := install.AcquirePullLock(st.Target, rendered[0].Name, install.PullOptions{HomeDir: userHomeDir()})
+				if lockErr != nil {
+					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "skipped", Error: lockErr.Error()})
+					continue
+				}
 				result, err := install.Install(install.RenderedSkill{Target: st.Target, Name: rendered[0].Name, Path: rendered[0].Path}, opts)
+				_ = lock.Release()
 				if err != nil {
 					logger.Record(events.Event{Event: events.EventInstall, Skill: st.Name, Target: string(st.Target), Scope: string(opts.Scope), Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
 					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "failed", Error: err.Error()})
