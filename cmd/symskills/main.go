@@ -100,6 +100,7 @@ func newRootCmd(version string) *cobra.Command {
 		newUninstallCmd(),
 		newStatusCmd(),
 		newSyncCmd(),
+		newPullCmd(),
 		newProfileCmd(),
 		newTargetsCmd(),
 		newDiscoverCmd(),
@@ -778,6 +779,64 @@ func newInstallCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	cmd.Flags().BoolVar(&allowExecutable, "allow-executable", false, "Preserve executable bits on resource files instead of stripping them")
 	cmd.Flags().StringVar(&profileName, "profile", "", "Install all skills from a context profile")
+	return cmd
+}
+
+func newPullCmd() *cobra.Command {
+	var targetName, scopeName string
+	var dryRun, jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "pull <skill-name>",
+		Short: "Carry harness-side edits into the portable library staging area",
+		Long: `Compare one installed skill with its portable library source and stage
+harness-side edits for review. Overlay-produced body regions and frontmatter
+keys are refused rather than merged. Use --dry-run to print the complete plan
+without writing a pending tree.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target, err := render.ParseTarget(targetName)
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "parse target")
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			result, err := install.Pull(install.PullOptions{
+				HomeDir: userHomeDir(), Scope: render.Scope(scopeName), LibraryDir: cfg.LibraryDir,
+				BaseDir: cfg.BaseDir, Target: target, Name: args[0], DryRun: dryRun,
+			})
+			if err != nil {
+				if len(result.Refusals) > 0 {
+					for _, refusal := range result.Refusals {
+						fmt.Fprintf(cmd.ErrOrStderr(), "refused: %s\\n", refusal)
+					}
+				}
+				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "pull")
+			}
+			if jsonOut {
+				return printJSON(cmd, result)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s %s\\n", result.Action, result.Name)
+			for _, change := range result.Changes {
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\\n", change.Status, change.Path)
+			}
+			if len(result.FrontmatterChanges) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "Frontmatter changes:")
+				for _, change := range result.FrontmatterChanges {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s (%s)\\n", change.Key, change.Reason)
+				}
+			}
+			if result.StagePath != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "pending: %s\\n", result.StagePath)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&targetName, "target", string(render.TargetOpenCode), "Target harness")
+	cmd.Flags().StringVar(&scopeName, "scope", string(render.ScopeUser), "Install scope: user or project")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the pull plan without writing")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	return cmd
 }
 
