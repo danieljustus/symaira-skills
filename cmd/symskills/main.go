@@ -519,14 +519,10 @@ func newDiffCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Render to a temp directory so diff never touches the
-			// real render cache or a symlinked install target (#86).
-			tempDir, err := os.MkdirTemp("", "symskills-diff-")
-			if err != nil {
-				return err
-			}
-			defer os.RemoveAll(tempDir)
-
+			// Render into a throwaway staging directory (#125): RenderDir is
+			// the live installed artifact in symlink mode and must only be
+			// written when a result is actually committed. The cleanup runs
+			// on every exit path, including error paths.
 			dir, err := resolveSkillDir(args, "skill-dir is required", cfg.LibraryDir)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "diff skill")
@@ -535,12 +531,10 @@ func newDiffCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rendered, errs := render.RenderAll(bundle, tempDir, []render.Target{target})
-			if len(rendered) == 0 {
-				if len(errs) > 0 {
-					return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
-				}
-				return exitcodes.Wrap(fmt.Errorf("target %s produced no render output", target), exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
+			rendered, cleanup, err := render.StagingRender(bundle, []render.Target{target})
+			defer cleanup()
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
 			}
 			installedPath, err := install.InstallPath(target, rendered[0].Name, install.Options{Scope: render.ScopeUser})
 			if err != nil {
