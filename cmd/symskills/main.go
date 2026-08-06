@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/danieljustus/symaira-corekit/exitcodes"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/danieljustus/symaira-skills/internal/config"
 	"github.com/danieljustus/symaira-skills/internal/discover"
+	"github.com/danieljustus/symaira-skills/internal/events"
 	"github.com/danieljustus/symaira-skills/internal/harness"
 	"github.com/danieljustus/symaira-skills/internal/install"
 	"github.com/danieljustus/symaira-skills/internal/mcptools"
@@ -97,11 +99,29 @@ func newRootCmd(version string) *cobra.Command {
 		newProfileCmd(),
 		newTargetsCmd(),
 		newDiscoverCmd(),
+		newLogCmd(),
 		newDoctorCmd(),
 		newServeCmd(version),
 		newVersionCmd(version),
 	)
 	return root
+}
+
+// newEventLogger returns the operation logger for the current invocation.
+// The log is a file under the current HOME; it is never written to stdout
+// (stdout is reserved for JSON-RPC frames while serving MCP).
+func newEventLogger() *events.Logger {
+	return events.New(events.DefaultPath(), version)
+}
+
+// skillVersion reads the version from a skill directory's frontmatter,
+// returning "" when the directory is not a loadable skill.
+func skillVersion(dir string) string {
+	bundle, err := skill.LoadBundle(dir)
+	if err != nil {
+		return ""
+	}
+	return bundle.Frontmatter.Version
 }
 
 func newInitCmd() *cobra.Command {
@@ -167,6 +187,15 @@ skill, it falls back to single-skill import.`,
 
 			if batch {
 				results := skill.ImportSkills(args[0], lib)
+				logger := newEventLogger()
+				for _, r := range results {
+					switch r.Status {
+					case skill.BatchImported:
+						logger.Record(events.Event{Event: events.EventImport, Skill: r.Name, Path: r.Path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
+					case skill.BatchFailed:
+						logger.Record(events.Event{Event: events.EventImport, Skill: r.Name, Outcome: events.OutcomeError, Error: r.Error, Actor: events.ActorCLI})
+					}
+				}
 				if jsonOut {
 					return printJSON(cmd, results)
 				}
@@ -189,9 +218,16 @@ skill, it falls back to single-skill import.`,
 			}
 
 			result, err := skill.ImportSkill(args[0], lib)
+			logger := newEventLogger()
 			if err != nil {
+				name := filepath.Base(args[0])
+				if b, lerr := skill.LoadBundle(args[0]); lerr == nil && b.Frontmatter.Name != "" {
+					name = b.Frontmatter.Name
+				}
+				logger.Record(events.Event{Event: events.EventImport, Skill: name, Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
 				return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "import skill")
 			}
+			logger.Record(events.Event{Event: events.EventImport, Skill: result.Name, SkillVersion: skillVersion(args[0]), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
 			if jsonOut {
 				return printJSON(cmd, result)
 			}
@@ -340,6 +376,20 @@ func newValidateCmd() *cobra.Command {
 			if issues == nil {
 				issues = []skill.Issue{}
 			}
+			if len(issues) > 0 {
+				messages := make([]string, 0, len(issues))
+				for _, issue := range issues {
+					messages = append(messages, issue.Message)
+				}
+				newEventLogger().Record(events.Event{
+					Event:   events.EventValidateFailure,
+					Skill:   bundle.Frontmatter.Name,
+					Path:    dir,
+					Outcome: events.OutcomeError,
+					Error:   strings.Join(messages, "; "),
+					Actor:   events.ActorCLI,
+				})
+			}
 			result := map[string]any{"valid": len(issues) == 0, "issues": issues}
 			if jsonOut {
 				return printJSON(cmd, result)
@@ -393,9 +443,12 @@ func newRenderCmd() *cobra.Command {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "load skill")
 			}
 			results, errs := render.RenderAll(bundle, out, targets)
+			logger := newEventLogger()
 			if len(errs) > 0 {
+				logger.Record(events.Event{Event: events.EventRender, Skill: bundle.Frontmatter.Name, Target: targetName, Path: out, Outcome: events.OutcomeError, Error: errs[0].Error(), Actor: events.ActorCLI})
 				return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render skill")
 			}
+			logger.Record(events.Event{Event: events.EventRender, Skill: bundle.Frontmatter.Name, SkillVersion: bundle.Frontmatter.Version, Target: targetName, Path: out, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
 			return printRenderResults(cmd, results, jsonOut)
 		},
 	}
@@ -418,13 +471,20 @@ func printRenderResults(cmd *cobra.Command, results []render.Rendered, jsonOut b
 
 func renderProfile(cmd *cobra.Command, cfg *config.Config, output string, targets []render.Target, profileName string, jsonOut bool) error {
 	results, issues, err := profile.RenderProfile(cfg.LibraryDir, cfg.ProfilesDir, ".", output, targets, profileName)
+	logger := newEventLogger()
 	if err != nil {
+		logger.Record(events.Event{Event: events.EventRender, Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
 		return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
 	}
 	if len(issues) > 0 {
 		for _, issue := range issues {
-			fmt.Fprintf(cmd.ErrOrStderr(), "%s\t%s\t%s\n", issue.Severity, issue.Code, issue.Message)
+			fmt.Fprintf(cmd.ErrOrStderr(), "%s	%s	%s\n", issue.Severity, issue.Code, issue.Message)
 		}
+		messages := make([]string, 0, len(issues))
+		for _, issue := range issues {
+			messages = append(messages, issue.Message)
+		}
+		logger.Record(events.Event{Event: events.EventRender, Outcome: events.OutcomeError, Error: strings.Join(messages, "; "), Actor: events.ActorCLI})
 		return exitcodes.Wrap(fmt.Errorf("profile has unresolved issues"), exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
 	}
 	if len(results) == 0 {
@@ -433,6 +493,9 @@ func renderProfile(cmd *cobra.Command, cfg *config.Config, output string, target
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "No skills in profile")
 		return nil
+	}
+	for _, result := range results {
+		logger.Record(events.Event{Event: events.EventRender, Skill: result.Name, SkillVersion: result.Frontmatter.Version, Target: string(result.Target), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
 	}
 	return printRenderResults(cmd, results, jsonOut)
 }
@@ -540,13 +603,19 @@ func newInstallCmd() *cobra.Command {
 			rendered, errs := render.RenderAll(bundle, out, []render.Target{target})
 			if len(rendered) == 0 {
 				if len(errs) > 0 {
+					newEventLogger().Record(events.Event{Event: events.EventInstall, Skill: bundle.Frontmatter.Name, Target: string(target), Outcome: events.OutcomeError, Error: errs[0].Error(), Actor: events.ActorCLI})
 					return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
 				}
 				return exitcodes.Wrap(fmt.Errorf("target %s produced no render output", target), exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
 			}
 			result, err := install.Install(install.RenderedSkill{Target: target, Name: rendered[0].Name, Path: rendered[0].Path}, opts)
+			logger := newEventLogger()
 			if err != nil {
+				logger.Record(events.Event{Event: events.EventInstall, Skill: rendered[0].Name, Target: string(target), Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
 				return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "install skill")
+			}
+			if !dryRun {
+				logger.Record(events.Event{Event: events.EventInstall, Skill: result.Name, SkillVersion: bundle.Frontmatter.Version, Target: string(target), Scope: string(opts.Scope), Mode: string(result.Mode), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
 			}
 			if jsonOut {
 				return printJSON(cmd, result)
@@ -571,13 +640,20 @@ func newInstallCmd() *cobra.Command {
 
 func installProfile(cmd *cobra.Command, cfg *config.Config, output string, target render.Target, profileName string, opts install.Options, jsonOut bool) error {
 	results, issues, err := profile.InstallProfile(cfg.LibraryDir, cfg.ProfilesDir, ".", output, target, profileName, opts)
+	logger := newEventLogger()
 	if err != nil {
+		logger.Record(events.Event{Event: events.EventProfileInstall, Target: string(target), Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
 		return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "install profile")
 	}
 	if len(issues) > 0 {
 		for _, issue := range issues {
-			fmt.Fprintf(cmd.ErrOrStderr(), "%s\t%s\t%s\n", issue.Severity, issue.Code, issue.Message)
+			fmt.Fprintf(cmd.ErrOrStderr(), "%s	%s	%s\n", issue.Severity, issue.Code, issue.Message)
 		}
+		messages := make([]string, 0, len(issues))
+		for _, issue := range issues {
+			messages = append(messages, issue.Message)
+		}
+		logger.Record(events.Event{Event: events.EventProfileInstall, Target: string(target), Outcome: events.OutcomeError, Error: strings.Join(messages, "; "), Actor: events.ActorCLI})
 		return exitcodes.Wrap(fmt.Errorf("profile has unresolved issues"), exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
 	}
 	if len(results) == 0 {
@@ -586,6 +662,11 @@ func installProfile(cmd *cobra.Command, cfg *config.Config, output string, targe
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "No skills in profile")
 		return nil
+	}
+	if !opts.DryRun {
+		for _, result := range results {
+			logger.Record(events.Event{Event: events.EventProfileInstall, Skill: result.Name, Target: string(result.Target), Scope: string(opts.Scope), Mode: string(result.Mode), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
+		}
 	}
 	if jsonOut {
 		return printJSON(cmd, results)
@@ -611,10 +692,15 @@ func newUninstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			removed, err := install.Uninstall(target, args[0], install.Options{Scope: render.Scope(scopeName)})
+			opts := install.Options{Scope: render.Scope(scopeName)}
+			removed, err := install.Uninstall(target, args[0], opts)
+			logger := newEventLogger()
+			path, _ := install.InstallPath(target, args[0], opts)
 			if err != nil {
+				logger.Record(events.Event{Event: events.EventUninstall, Skill: args[0], Target: string(target), Scope: string(opts.Scope), Path: path, Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
 				return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "uninstall skill")
 			}
+			logger.Record(events.Event{Event: events.EventUninstall, Skill: args[0], Target: string(target), Scope: string(opts.Scope), Path: path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
 			if jsonOut {
 				return printJSON(cmd, map[string]any{
 					"name":    args[0],
@@ -798,11 +884,12 @@ func newDoctorCmd() *cobra.Command {
 				"targets":      paths,
 				"profiles_dir": cfg.ProfilesDir,
 				"project_dir":  ".",
+				"log_path":     events.DefaultPath(),
 			}
 			if jsonOut {
 				return printJSON(cmd, result)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "config: %s\nlibrary: %s\nrendered: %s\nprofiles: %s\n", config.ConfigPath(), cfg.LibraryDir, cfg.RenderDir, cfg.ProfilesDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "config: %s\nlibrary: %s\nrendered: %s\nprofiles: %s\nlog: %s\n", config.ConfigPath(), cfg.LibraryDir, cfg.RenderDir, cfg.ProfilesDir, events.DefaultPath())
 			for _, p := range paths {
 				fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", p.Target, p.User)
 			}
@@ -823,8 +910,9 @@ func newServeCmd(version string) *cobra.Command {
 				return err
 			}
 			// stdout stays reserved for JSON-RPC frames; all diagnostics go
-			// through slog to stderr.
-			return mcptools.Serve(version, mcptools.Options{LibraryDir: cfg.LibraryDir, RenderDir: cfg.RenderDir, ProfilesDir: cfg.ProfilesDir})
+			// through slog to stderr. The operation log is a file whose
+			// location is passed explicitly.
+			return mcptools.Serve(version, mcptools.Options{LibraryDir: cfg.LibraryDir, RenderDir: cfg.RenderDir, ProfilesDir: cfg.ProfilesDir, EventsPath: events.DefaultPath(), Version: version})
 		},
 	}
 	// stdio is the only transport, so it is always enabled. The flag is
@@ -959,5 +1047,58 @@ func newDiscoverCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output discovery results as JSON")
 	cmd.Flags().StringVar(&scope, "scope", "user", "Scope to check (user or project)")
 	cmd.Flags().StringSliceVar(&paths, "path", nil, "Explicit paths to scan for skills")
+	return cmd
+}
+
+func newLogCmd() *cobra.Command {
+	var skillName, targetName, since string
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "log",
+		Short: "Show the local operation history",
+		Long: `Show the append-only operation log written for every skill-mutating
+operation (import, render, install, uninstall, profile install, validate
+failure). Records live at ~/.local/share/symskills/events.jsonl and rotate
+to events.1.jsonl when the file grows too large; the log is local-only and
+never transmitted anywhere.
+
+Filters narrow the records shown; --json emits the raw JSON records in
+chronological order.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			var filter events.Filter
+			filter.Skill = skillName
+			filter.Target = targetName
+			if since != "" {
+				ts, err := time.Parse(time.RFC3339Nano, since)
+				if err != nil {
+					return exitcodes.Wrap(fmt.Errorf("invalid --since %q: want an RFC3339 timestamp like 2026-08-01T00:00:00Z", since), exitcodes.ExitData, exitcodes.KindValidation, "parse since")
+				}
+				filter.Since = ts
+			}
+			records, err := newEventLogger().Read(filter)
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindInternal, "read event log")
+			}
+			if jsonOut {
+				if records == nil {
+					records = []events.Event{}
+				}
+				return printJSON(cmd, records)
+			}
+			for _, ev := range records {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s	%s	%s	%s	%s	%s	%s	%s", ev.TS, ev.Event, ev.Skill, ev.Target, ev.Scope, ev.Mode, ev.Outcome, ev.Path)
+				if ev.Error != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "	%s", ev.Error)
+				}
+				fmt.Fprintln(cmd.OutOrStdout())
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&skillName, "skill", "", "Only show records for this skill")
+	cmd.Flags().StringVar(&targetName, "target", "", "Only show records for this harness target")
+	cmd.Flags().StringVar(&since, "since", "", "Only show records at or after this RFC3339 timestamp")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit raw JSON records")
 	return cmd
 }
