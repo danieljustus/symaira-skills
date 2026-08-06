@@ -321,10 +321,12 @@ func ExtractRev(dir, rev, dst string) error {
 			return err
 		}
 		name := filepath.Clean(filepath.FromSlash(hdr.Name))
-		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
+		target := filepath.Join(dstAbs, name)
+		// Canonical zip-slip guard on the joined target: it must stay
+		// under the destination root.
+		if target != dstAbs && !strings.HasPrefix(target, dstAbs+string(os.PathSeparator)) {
 			return fmt.Errorf("archive entry %q escapes destination", hdr.Name)
 		}
-		target := filepath.Join(dstAbs, name)
 		// Verify the (possibly symlinked) parent still resolves inside the
 		// destination root. Without this, an earlier symlink entry could
 		// redirect a later file write outside the archive root.
@@ -352,16 +354,16 @@ func ExtractRev(dir, rev, dst string) error {
 				return err
 			}
 		case tar.TypeSymlink:
-			// The link name itself must not be absolute and must not
-			// escape the destination root once resolved relative to the
-			// link's directory — an unchecked linkname could point
+			// The link name must not be absolute and, once resolved
+			// against the link's directory, must stay inside the
+			// destination root — an unchecked linkname could point
 			// anywhere on the machine.
-			linkTarget, err := safeLinkTarget(dstAbs, filepath.Dir(target), hdr.Linkname)
-			if err != nil {
-				return fmt.Errorf("archive symlink %q: %w", hdr.Name, err)
+			linkPath := filepath.Clean(filepath.Join(filepath.Dir(target), filepath.FromSlash(hdr.Linkname)))
+			if filepath.IsAbs(hdr.Linkname) || !strings.HasPrefix(linkPath, dstAbs+string(os.PathSeparator)) {
+				return fmt.Errorf("archive symlink %q escapes destination", hdr.Name)
 			}
 			_ = os.Remove(target)
-			if err := os.Symlink(linkTarget, target); err != nil {
+			if err := os.Symlink(hdr.Linkname, target); err != nil {
 				return err
 			}
 		default:
@@ -388,22 +390,6 @@ func ensureParentInside(root, path string) error {
 		return fmt.Errorf("archive entry escapes destination via symlink: %q resolves to %q", path, resolved)
 	}
 	return nil
-}
-
-// safeLinkTarget validates a tar symlink linkname: absolute linknames are
-// refused and the linkname resolved against the link's directory must stay
-// inside root. The returned value is the linkname to create (unchanged when
-// valid).
-func safeLinkTarget(root, linkDir, linkname string) (string, error) {
-	if linkname == "" || filepath.IsAbs(linkname) {
-		return "", fmt.Errorf("absolute or empty linkname %q", linkname)
-	}
-	resolved := filepath.Clean(filepath.Join(linkDir, filepath.FromSlash(linkname)))
-	rel, err := filepath.Rel(root, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("linkname %q escapes destination", linkname)
-	}
-	return linkname, nil
 }
 
 // Restore replaces the working tree of the repository at dir with a copy
