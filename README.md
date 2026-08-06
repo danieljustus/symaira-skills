@@ -62,6 +62,7 @@ my-skill/
   references/                 # optional portable support files
   scripts/                    # optional portable support files
   assets/                     # optional portable support files
+  flows/                      # optional symbrowse flow documents (*.yaml)
   overlays/
     opencode/
       prepend.md              # optional
@@ -105,6 +106,45 @@ An overlay `frontmatter.toml` can add target metadata:
 workflow = "github"
 audience = "maintainers"
 ```
+
+## Flow Skills (symbrowse)
+
+Flow skills are portable `SKILL.md` bundles whose body is *executed by a
+tool* instead of being consumed by an agent harness. The first consumer
+is `symbrowse`, which runs browser-automation flows from them.
+Discovery, versioning, and distribution stay in `symskills` — the single
+source of truth; symbrowse keeps no second registry (SSOT rule).
+
+A flow skill is an ordinary skill bundle with flow documents attached.
+Two layouts are supported:
+
+```text
+browser-flows/                 browser-root-flow/
+  SKILL.md                       SKILL.md
+  flows/                         checkout.flow.yaml
+    checkout.yaml
+    cleanup.yaml
+```
+
+- **`flows/` subdirectory** — every `*.yaml` file under `flows/` is a
+  flow document (schema: https://symaira.dev/schemas/symbrowse-flow.json).
+  Preferred layout for skills with more than one flow.
+- **Root `*.flow.yaml` file** — a single flow document in the skill
+  root, for skills with exactly one flow.
+
+Flow documents are YAML **data** files, so they are ordinary skill
+resources: no executable bit, no special flags, no `allow_executable`
+setting needed. They travel through `import`, `render`, and `install`
+like any other support file and land byte-identical in the installed
+tree.
+
+`symbrowse flow list` discovers them at runtime by running
+`symskills list --json` and scanning each skill's `path` field for flow
+documents — there is no compile-time import. Flow precedence is:
+project-local (`./.symbrowse/flows/`) over global config
+(`~/.config/symbrowse/flows/`) over symskills library flows.
+
+See [docs/flow-skills.md](docs/flow-skills.md) for the full contract.
 
 ## Profiles
 

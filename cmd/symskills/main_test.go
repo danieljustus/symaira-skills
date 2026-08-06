@@ -985,6 +985,144 @@ func TestListCommandStrictExitsNonZero(t *testing.T) {
 	}
 }
 
+// TestFlowSkillImportListAndInstall is the E2E proof for the flow skill
+// type (issue #129): a flow skill imports into the managed library, shows
+// up in `list --json`, and installs in copy mode with its flow documents
+// shipped into the installed tree.
+func TestFlowSkillImportListAndInstall(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	// Import both flow-skill layout conventions into the managed library.
+	for _, fixture := range []string{"browser-flows", "browser-root-flow"} {
+		src := filepath.Join("..", "..", "testdata", "flow", fixture)
+		stdout, stderr, err := runCmd(t, home, "import", src)
+		if err != nil {
+			t.Fatalf("import %s failed: %v, stderr: %s", fixture, err, stderr)
+		}
+		if !strings.Contains(stdout, "Imported "+fixture) {
+			t.Errorf("unexpected import output for %s: %q", fixture, stdout)
+		}
+	}
+
+	// list --json must expose every imported skill with its library path
+	// so symbrowse can scan for flow documents at runtime.
+	stdout, _, err := runCmd(t, home, "list", "--json")
+	if err != nil {
+		t.Fatalf("list --json failed: %v", err)
+	}
+	var listing struct {
+		Skills []struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &listing); err != nil {
+		t.Fatalf("parse list JSON: %v\nraw: %s", err, stdout)
+	}
+	byName := map[string]string{}
+	for _, s := range listing.Skills {
+		byName[s.Name] = s.Path
+	}
+	for _, fixture := range []string{"browser-flows", "browser-root-flow"} {
+		if byName[fixture] == "" {
+			t.Fatalf("flow skill %q missing from list --json: %#v", fixture, listing.Skills)
+		}
+	}
+
+	// Install the flows/ layout skill in copy mode; the flow documents
+	// must land in the installed tree as non-executable data files.
+	libDir := filepath.Join(home, ".local", "share", "symskills", "library")
+	stdout, _, err = runCmd(t, home, "install", "--json", "--mode", "copy", filepath.Join(libDir, "browser-flows"))
+	if err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+	var result struct {
+		Action string `json:"action"`
+		Name   string `json:"name"`
+		Path   string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("parse install JSON: %v\nraw: %s", err, stdout)
+	}
+	if result.Action != "installed" || result.Name != "browser-flows" {
+		t.Fatalf("unexpected install result: %+v", result)
+	}
+	for _, flow := range []string{"flows/checkout.yaml", "flows/cleanup.yaml"} {
+		if _, err := os.Stat(filepath.Join(result.Path, filepath.FromSlash(flow))); err != nil {
+			t.Errorf("flow document %q missing from installed tree at %s: %v", flow, result.Path, err)
+		}
+	}
+	info, err := os.Stat(filepath.Join(result.Path, "flows", "checkout.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 != 0 {
+		t.Errorf("installed flow document must not be executable, got mode %v", info.Mode())
+	}
+}
+
+// TestListJSONPathContractForSymbrowse locks the symbrowse discovery
+// contract (issue #129): `symbrowse flow list` consumes
+// `symskills list --json` and scans each skill's `path` field for flow
+// documents at runtime. The path must therefore be absolute, non-empty,
+// and point at the skill directory in the managed library.
+func TestListJSONPathContractForSymbrowse(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "path-contract", "Locks the list --json path contract")
+	if _, _, err := runCmd(t, home, "import", skillDir); err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+
+	stdout, _, err := runCmd(t, home, "list", "--json")
+	if err != nil {
+		t.Fatalf("list --json failed: %v", err)
+	}
+	var listing struct {
+		Skills []struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &listing); err != nil {
+		t.Fatalf("parse list JSON: %v\nraw: %s", err, stdout)
+	}
+
+	var found bool
+	for _, s := range listing.Skills {
+		if s.Name != "path-contract" {
+			continue
+		}
+		found = true
+		if s.Path == "" {
+			t.Fatal("list --json skill entry has empty path; symbrowse cannot discover flows")
+		}
+		if !filepath.IsAbs(s.Path) {
+			t.Errorf("list --json path must be absolute for symbrowse scanning, got %q", s.Path)
+		}
+		info, err := os.Stat(s.Path)
+		if err != nil {
+			t.Fatalf("list --json path %q is not a real directory: %v", s.Path, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("list --json path %q is not a directory", s.Path)
+		}
+		if _, err := os.Stat(filepath.Join(s.Path, "SKILL.md")); err != nil {
+			t.Fatalf("list --json path %q does not contain SKILL.md: %v", s.Path, err)
+		}
+		want := filepath.Join(home, ".local", "share", "symskills", "library", "path-contract")
+		if s.Path != want {
+			t.Errorf("list --json path: want %q, got %q", want, s.Path)
+		}
+	}
+	if !found {
+		t.Fatalf("imported skill missing from list --json: %#v", listing.Skills)
+	}
+}
+
 func TestRenderCommandWritesCodexMetadata(t *testing.T) {
 	root := t.TempDir()
 	writeTestSkill(t, root, "cli-render", "CLI render fixture.")
