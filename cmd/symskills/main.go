@@ -546,7 +546,7 @@ func newDiffCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			changes, err := install.Diff(rendered[0].Path, installedPath)
+			changes, err := install.Diff(rendered[0].Path, installedPath, install.Options{Scope: render.ScopeUser, Target: target, BaseDir: cfg.BaseDir})
 			if err != nil {
 				return err
 			}
@@ -588,7 +588,7 @@ func newInstallCmd() *cobra.Command {
 			if out == "" {
 				out = cfg.RenderDir
 			}
-			opts := install.Options{Scope: render.Scope(scopeName), Mode: install.Mode(modeName), DryRun: dryRun, Force: force, AllowExecutable: allowExecutable}
+			opts := install.Options{Scope: render.Scope(scopeName), Mode: install.Mode(modeName), DryRun: dryRun, Force: force, AllowExecutable: allowExecutable, BaseDir: cfg.BaseDir}
 			if profileName != "" {
 				if len(args) > 0 {
 					return exitcodes.Wrap(fmt.Errorf("skill-dir is not used with --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "install profile")
@@ -702,7 +702,11 @@ func newUninstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			opts := install.Options{Scope: render.Scope(scopeName)}
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			opts := install.Options{Scope: render.Scope(scopeName), BaseDir: cfg.BaseDir}
 			removed, err := install.Uninstall(target, args[0], opts)
 			logger := newEventLogger()
 			path, _ := install.InstallPath(target, args[0], opts)

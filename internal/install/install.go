@@ -52,6 +52,13 @@ type Options struct {
 	// AllowExecutable preserves executable bits on resource files instead
 	// of stripping them (the default install policy).
 	AllowExecutable bool `json:"allow_executable"`
+	// BaseDir overrides the base snapshot root (defaults to
+	// ~/.local/share/symskills/base). It is written on install and removed
+	// on uninstall.
+	BaseDir string `json:"base_dir,omitempty"`
+	// Target identifies the harness a skill is installed into. It is used
+	// by Diff to locate the persisted base snapshot.
+	Target render.Target `json:"target,omitempty"`
 }
 
 // ResourceModeChange describes an executable-bit change applied (or planned)
@@ -135,6 +142,9 @@ func Install(item RenderedSkill, opts Options) (Result, error) {
 		if err := writeMarker(item.Path, item, opts.Mode); err != nil {
 			return Result{}, err
 		}
+		if err := WriteBaseSnapshot(item.Path, item.Target, item.Name, opts); err != nil {
+			return Result{}, err
+		}
 		return result, nil
 	}
 	if opts.DryRun {
@@ -150,6 +160,9 @@ func Install(item RenderedSkill, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	if err := installAtomic(item, dest, &opts, &result); err != nil {
+		return Result{}, err
+	}
+	if err := WriteBaseSnapshot(item.Path, item.Target, item.Name, opts); err != nil {
 		return Result{}, err
 	}
 	return result, nil
@@ -467,6 +480,9 @@ func Uninstall(target render.Target, name string, opts Options) (removed bool, e
 		if err := os.RemoveAll(dest); err != nil {
 			return false, err
 		}
+		if err := RemoveBase(target, name, opts); err != nil {
+			return false, err
+		}
 		return true, nil
 	}
 	if _, err := os.Stat(filepath.Join(dest, markerFile)); err != nil {
@@ -475,10 +491,14 @@ func Uninstall(target render.Target, name string, opts Options) (removed bool, e
 	if err := os.RemoveAll(dest); err != nil {
 		return false, err
 	}
+	if err := RemoveBase(target, name, opts); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 
-func Diff(renderedPath, installedPath string) ([]Change, error) {
+// Diff compares a freshly rendered skill against its installed state.
+func Diff(renderedPath, installedPath string, opts Options) ([]Change, error) {
 	left, err := fileHashes(renderedPath)
 	if err != nil {
 		return nil, err

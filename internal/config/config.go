@@ -15,6 +15,10 @@ type Config struct {
 	RenderDir   string `json:"render_dir" toml:"render_dir"`
 	CacheDir    string `json:"cache_dir" toml:"cache_dir"`
 	ProfilesDir string `json:"profiles_dir" toml:"profiles_dir"`
+	// BaseDir holds the frozen per-skill base snapshots written on install
+	// (base/<target>/<name>/ plus manifest.json). It is the stable third
+	// reference that makes three-way comparisons possible (#124).
+	BaseDir string `json:"base_dir" toml:"base_dir"`
 	// Targets holds user-defined harness targets. It intentionally has no
 	// json tag: configkit's generic loader walks json-tagged fields and
 	// cannot decode slices of structs, so targets are loaded separately by
@@ -93,6 +97,7 @@ func Defaults() *Config {
 		RenderDir:   filepath.Join(home, ".local", "share", "symskills", "rendered"),
 		CacheDir:    filepath.Join(home, ".cache", "symskills"),
 		ProfilesDir: filepath.Join(home, ".config", "symskills", "profiles"),
+		BaseDir:     filepath.Join(home, ".local", "share", "symskills", "base"),
 	}
 }
 
@@ -105,7 +110,7 @@ func ConfigPath() string {
 }
 
 func EnsureDirs(cfg *Config) error {
-	for _, dir := range []string{filepath.Dir(ConfigPath()), cfg.LibraryDir, cfg.RenderDir, cfg.CacheDir, cfg.ProfilesDir} {
+	for _, dir := range []string{filepath.Dir(ConfigPath()), cfg.LibraryDir, cfg.RenderDir, cfg.CacheDir, cfg.ProfilesDir, cfg.BaseDir} {
 		if dir == "" {
 			continue
 		}

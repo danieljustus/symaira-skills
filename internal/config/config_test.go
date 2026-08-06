@@ -22,6 +22,9 @@ func TestDefaults(t *testing.T) {
 	if cfg.ProfilesDir == "" {
 		t.Error("ProfilesDir should not be empty")
 	}
+	if cfg.BaseDir == "" {
+		t.Error("BaseDir should not be empty")
+	}
 
 	// Verify paths contain expected components
 	home, _ := os.UserHomeDir()
@@ -29,6 +32,7 @@ func TestDefaults(t *testing.T) {
 	expectedRender := filepath.Join(home, ".local", "share", "symskills", "rendered")
 	expectedCache := filepath.Join(home, ".cache", "symskills")
 	expectedProfiles := filepath.Join(home, ".config", "symskills", "profiles")
+	expectedBase := filepath.Join(home, ".local", "share", "symskills", "base")
 
 	if cfg.LibraryDir != expectedLib {
 		t.Errorf("LibraryDir = %q, want %q", cfg.LibraryDir, expectedLib)
@@ -41,6 +45,9 @@ func TestDefaults(t *testing.T) {
 	}
 	if cfg.ProfilesDir != expectedProfiles {
 		t.Errorf("ProfilesDir = %q, want %q", cfg.ProfilesDir, expectedProfiles)
+	}
+	if cfg.BaseDir != expectedBase {
+		t.Errorf("BaseDir = %q, want %q", cfg.BaseDir, expectedBase)
 	}
 }
 
@@ -79,6 +86,7 @@ func TestEnsureDirs(t *testing.T) {
 		RenderDir:   filepath.Join(tmpDir, "rendered"),
 		CacheDir:    filepath.Join(tmpDir, "cache"),
 		ProfilesDir: filepath.Join(tmpDir, "profiles"),
+		BaseDir:     filepath.Join(tmpDir, "base"),
 	}
 
 	// Ensure directories
@@ -94,6 +102,7 @@ func TestEnsureDirs(t *testing.T) {
 		cfg.RenderDir,
 		cfg.CacheDir,
 		cfg.ProfilesDir,
+		cfg.BaseDir,
 	}
 
 	for _, dir := range dirs {
@@ -117,6 +126,7 @@ func TestEnsureDirsPermissions(t *testing.T) {
 		RenderDir:   filepath.Join(tmpDir, "rendered"),
 		CacheDir:    filepath.Join(tmpDir, "cache"),
 		ProfilesDir: filepath.Join(tmpDir, "profiles"),
+		BaseDir:     filepath.Join(tmpDir, "base"),
 	}
 
 	// Ensure directories
@@ -132,6 +142,7 @@ func TestEnsureDirsPermissions(t *testing.T) {
 		cfg.RenderDir,
 		cfg.CacheDir,
 		cfg.ProfilesDir,
+		cfg.BaseDir,
 	}
 
 	for _, dir := range dirs {
@@ -206,6 +217,7 @@ func TestLoadWithCustomConfig(t *testing.T) {
 render_dir = "/custom/rendered"
 cache_dir = "/custom/cache"
 profiles_dir = "/custom/profiles"
+base_dir = "/custom/base"
 `
 	err = os.WriteFile(configPath, []byte(customContent), 0644)
 	if err != nil {
@@ -230,6 +242,9 @@ profiles_dir = "/custom/profiles"
 	}
 	if loaded.ProfilesDir != "/custom/profiles" {
 		t.Errorf("ProfilesDir = %q, want %q", loaded.ProfilesDir, "/custom/profiles")
+	}
+	if loaded.BaseDir != "/custom/base" {
+		t.Errorf("BaseDir = %q, want %q", loaded.BaseDir, "/custom/base")
 	}
 }
 
