@@ -8,12 +8,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/danieljustus/symaira-corekit/exitcodes"
 	"github.com/danieljustus/symaira-corekit/mcpserver"
 	"github.com/danieljustus/symaira-skills/internal/config"
 	"github.com/danieljustus/symaira-skills/internal/discover"
+	"github.com/danieljustus/symaira-skills/internal/events"
 	"github.com/danieljustus/symaira-skills/internal/harness"
 	"github.com/danieljustus/symaira-skills/internal/install"
 	"github.com/danieljustus/symaira-skills/internal/profile"
@@ -29,6 +31,12 @@ type Options struct {
 	ProfilesDir string
 	HomeDir     string
 	ProjectDir  string
+	// Version is the symskills build version stamped into event log
+	// records as tool_version.
+	Version string
+	// EventsPath overrides the operation-log location. When empty, the log
+	// lives under HomeDir (or the default home when HomeDir is empty too).
+	EventsPath string
 }
 
 // mcpJSON marshals v to JSON and returns it as a string suitable for
@@ -54,6 +62,19 @@ func Register(srv *mcpserver.Server, opts Options) {
 	}
 	if opts.ProfilesDir == "" {
 		opts.ProfilesDir = cfg.ProfilesDir
+	}
+	// The operation log is a file, never console output: stdout stays
+	// reserved for JSON-RPC frames while serving MCP (AGENTS.md). The
+	// logger is only created when a log location is known; the CLI serve
+	// command passes EventsPath explicitly, so a bare Options{} (as used
+	// by tests) never writes anywhere.
+	logPath := opts.EventsPath
+	if logPath == "" && opts.HomeDir != "" {
+		logPath = filepath.Join(opts.HomeDir, ".local", "share", "symskills", "events.jsonl")
+	}
+	var logger *events.Logger
+	if logPath != "" {
+		logger = events.New(logPath, opts.Version)
 	}
 
 	srv.RegisterTool(&mcpserver.Tool{
@@ -94,7 +115,22 @@ func Register(srv *mcpserver.Server, opts Options) {
 			if err != nil {
 				return nil, err
 			}
-			return mcpJSON(map[string]any{"issues": skill.Validate(result)})
+			issues := skill.Validate(result)
+			if len(issues) > 0 {
+				messages := make([]string, 0, len(issues))
+				for _, issue := range issues {
+					messages = append(messages, issue.Message)
+				}
+				logger.Record(events.Event{
+					Event:   events.EventValidateFailure,
+					Skill:   result.Frontmatter.Name,
+					Path:    result.Root,
+					Outcome: events.OutcomeError,
+					Error:   strings.Join(messages, "; "),
+					Actor:   events.ActorMCP,
+				})
+			}
+			return mcpJSON(map[string]any{"issues": issues})
 		},
 	})
 	srv.RegisterTool(&mcpserver.Tool{
@@ -154,7 +190,10 @@ func Register(srv *mcpserver.Server, opts Options) {
 			}
 
 			if args.Profile != "" {
-				return renderProfile(opts, cfg, targets, args.Profile, dryRun)
+				if dryRun {
+					return renderProfileDryRun(opts, targets, args.Profile)
+				}
+				return renderProfile(opts, cfg, targets, args.Profile, dryRun, logger)
 			}
 			bundle, err := callInspect(ctx, srv, opts, in)
 			if err != nil {
@@ -182,8 +221,14 @@ func Register(srv *mcpserver.Server, opts Options) {
 
 			rendered, errs := render.RenderAll(bundle, opts.RenderDir, targets)
 			if len(rendered) == 0 && len(errs) > 0 {
+				logger.Record(events.Event{Event: events.EventRender, Skill: bundle.Frontmatter.Name, Target: args.Target, Outcome: events.OutcomeError, Error: errs[0].Error(), Actor: events.ActorMCP})
 				return nil, errs[0]
 			}
+			targetLabel := args.Target
+			if targetLabel == "" {
+				targetLabel = "all"
+			}
+			logger.Record(events.Event{Event: events.EventRender, Skill: bundle.Frontmatter.Name, SkillVersion: bundle.Frontmatter.Version, Target: targetLabel, Path: opts.RenderDir, Outcome: events.OutcomeOK, Actor: events.ActorMCP})
 			return mcpJSON(rendered)
 		},
 	})
@@ -223,7 +268,7 @@ func Register(srv *mcpserver.Server, opts Options) {
 				if dryRun {
 					return installProfileDryRun(opts, target, args.Profile, installOpts)
 				}
-				return installProfile(opts, cfg, target, args.Profile, installOpts)
+				return installProfile(opts, cfg, target, args.Profile, installOpts, logger)
 			}
 			bundle, err := callInspect(ctx, srv, opts, in)
 			if err != nil {
@@ -253,6 +298,7 @@ func Register(srv *mcpserver.Server, opts Options) {
 			rendered, errs := render.RenderAll(bundle, opts.RenderDir, []render.Target{target})
 			if len(rendered) == 0 {
 				if len(errs) > 0 {
+					logger.Record(events.Event{Event: events.EventInstall, Skill: bundle.Frontmatter.Name, Target: string(target), Outcome: events.OutcomeError, Error: errs[0].Error(), Actor: events.ActorMCP})
 					return nil, errs[0]
 				}
 				return nil, fmt.Errorf("target %s produced no render output", target)
@@ -263,8 +309,10 @@ func Register(srv *mcpserver.Server, opts Options) {
 				Path:   rendered[0].Path,
 			}, installOpts)
 			if err != nil {
+				logger.Record(events.Event{Event: events.EventInstall, Skill: rendered[0].Name, Target: string(target), Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorMCP})
 				return nil, err
 			}
+			logger.Record(events.Event{Event: events.EventInstall, Skill: result.Name, Target: string(result.Target), Scope: string(installOpts.Scope), Mode: string(result.Mode), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorMCP})
 			return mcpJSON(result)
 		},
 	})
@@ -339,7 +387,7 @@ func callInspect(_ context.Context, _ *mcpserver.Server, opts Options, in json.R
 	return skill.LoadBundle(root)
 }
 
-func renderProfile(opts Options, cfg *config.Config, targets []render.Target, profileName string, dryRun bool) (any, error) {
+func renderProfile(opts Options, cfg *config.Config, targets []render.Target, profileName string, dryRun bool, logger *events.Logger) (any, error) {
 	if dryRun {
 		return renderProfileDryRun(opts, targets, profileName)
 	}
@@ -348,7 +396,15 @@ func renderProfile(opts Options, cfg *config.Config, targets []render.Target, pr
 		return nil, exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
 	}
 	if len(issues) > 0 {
+		messages := make([]string, 0, len(issues))
+		for _, issue := range issues {
+			messages = append(messages, issue.Message)
+		}
+		logger.Record(events.Event{Event: events.EventRender, Outcome: events.OutcomeError, Error: strings.Join(messages, "; "), Actor: events.ActorMCP})
 		return mcpJSON(map[string]any{"skills": []render.Rendered{}, "issues": issues})
+	}
+	for _, result := range results {
+		logger.Record(events.Event{Event: events.EventRender, Skill: result.Name, SkillVersion: result.Frontmatter.Version, Target: string(result.Target), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorMCP})
 	}
 	return mcpJSON(results)
 }
@@ -380,13 +436,22 @@ func renderProfileDryRun(opts Options, targets []render.Target, profileName stri
 	return mcpJSON(planned)
 }
 
-func installProfile(opts Options, cfg *config.Config, target render.Target, profileName string, installOpts install.Options) (any, error) {
+func installProfile(opts Options, cfg *config.Config, target render.Target, profileName string, installOpts install.Options, logger *events.Logger) (any, error) {
 	results, issues, err := profile.InstallProfile(opts.LibraryDir, opts.ProfilesDir, opts.ProjectDir, opts.RenderDir, target, profileName, installOpts)
 	if err != nil {
+		logger.Record(events.Event{Event: events.EventProfileInstall, Target: string(target), Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorMCP})
 		return nil, exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
 	}
 	if len(issues) > 0 {
+		messages := make([]string, 0, len(issues))
+		for _, issue := range issues {
+			messages = append(messages, issue.Message)
+		}
+		logger.Record(events.Event{Event: events.EventProfileInstall, Target: string(target), Outcome: events.OutcomeError, Error: strings.Join(messages, "; "), Actor: events.ActorMCP})
 		return mcpJSON(map[string]any{"results": []install.Result{}, "issues": issues})
+	}
+	for _, result := range results {
+		logger.Record(events.Event{Event: events.EventProfileInstall, Skill: result.Name, Target: string(result.Target), Scope: string(installOpts.Scope), Mode: string(result.Mode), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorMCP})
 	}
 	return mcpJSON(results)
 }

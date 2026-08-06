@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/danieljustus/symaira-skills/internal/events"
 	"github.com/danieljustus/symaira-skills/internal/render"
 )
 
@@ -667,6 +670,191 @@ func TestDoctorCommand(t *testing.T) {
 		if entry.User == "" {
 			t.Errorf("expected target %q user path to be non-empty", entry.Target)
 		}
+	}
+}
+
+func eventsLogPath(home string) string {
+	return filepath.Join(home, ".local", "share", "symskills", "events.jsonl")
+}
+
+func readEvents(t *testing.T, home string) []events.Event {
+	t.Helper()
+	data, err := os.ReadFile(eventsLogPath(home))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read events log: %v", err)
+	}
+	var out []events.Event
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var ev events.Event
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			t.Fatalf("malformed event line %q: %v", line, err)
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
+func TestEventLogImportAppendsExactlyOneRecord(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "log-import", "For testing the event log")
+
+	if _, _, err := runCmd(t, home, "import", skillDir); err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+
+	records := readEvents(t, home)
+	if len(records) != 1 {
+		t.Fatalf("expected exactly one event record after import, got %d: %+v", len(records), records)
+	}
+	ev := records[0]
+	if ev.Event != "import" || ev.Skill != "log-import" || ev.Outcome != "ok" || ev.Actor != "cli" {
+		t.Errorf("unexpected event record: %+v", ev)
+	}
+	if _, err := time.Parse(time.RFC3339, ev.TS); err != nil {
+		t.Errorf("ts is not RFC3339: %q (%v)", ev.TS, err)
+	}
+}
+
+func TestEventLogInstallUninstallAppendRecords(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "log-install", "For testing the event log")
+
+	if _, _, err := runCmd(t, home, "import", skillDir); err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+	if _, _, err := runCmd(t, home, "install", "--mode", "copy", skillDir); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+	if _, _, err := runCmd(t, home, "uninstall", "log-install"); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	records := readEvents(t, home)
+	if len(records) != 3 {
+		t.Fatalf("expected 3 event records (import, install, uninstall), got %d: %+v", len(records), records)
+	}
+	byEvent := map[string]events.Event{}
+	for _, ev := range records {
+		byEvent[ev.Event] = ev
+	}
+	if ev := byEvent["import"]; ev.Skill != "log-install" || ev.Outcome != "ok" {
+		t.Errorf("unexpected import record: %+v", ev)
+	}
+	if ev := byEvent["install"]; ev.Skill != "log-install" || ev.Mode != "copy" || ev.Outcome != "ok" {
+		t.Errorf("unexpected install record: %+v", ev)
+	}
+	if ev := byEvent["uninstall"]; ev.Skill != "log-install" || ev.Outcome != "ok" {
+		t.Errorf("unexpected uninstall record: %+v", ev)
+	}
+}
+
+func TestLogCommandFiltersAndJSON(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	for _, name := range []string{"log-alpha", "log-beta"} {
+		skillDir := t.TempDir()
+		writeTestSkill(t, skillDir, name, "For testing the log command")
+		if _, _, err := runCmd(t, home, "import", skillDir); err != nil {
+			t.Fatalf("import %s failed: %v", name, err)
+		}
+	}
+	// A failed duplicate import also logs, with outcome error.
+	dupDir := t.TempDir()
+	writeTestSkill(t, dupDir, "log-alpha", "Duplicate")
+	if _, _, err := runCmd(t, home, "import", dupDir); err == nil {
+		t.Fatal("expected duplicate import to fail")
+	}
+
+	// Filter by skill: only log-alpha records, chronological, both outcomes.
+	stdout, _, err := runCmd(t, home, "log", "--skill", "log-alpha")
+	if err != nil {
+		t.Fatalf("log --skill failed: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 log-alpha records, got %d: %q", len(lines), stdout)
+	}
+	if !strings.Contains(lines[0], "import") || !strings.Contains(lines[0], "log-alpha") {
+		t.Errorf("unexpected log line: %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "error") {
+		t.Errorf("expected the duplicate-import failure line to carry outcome error: %q", lines[1])
+	}
+
+	// --json emits raw records.
+	stdout, _, err = runCmd(t, home, "log", "--json")
+	if err != nil {
+		t.Fatalf("log --json failed: %v", err)
+	}
+	var records []events.Event
+	if err := json.Unmarshal([]byte(stdout), &records); err != nil {
+		t.Fatalf("parse log --json: %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("expected 3 records in --json output, got %d", len(records))
+	}
+	if records[0].TS > records[1].TS || records[1].TS > records[2].TS {
+		t.Errorf("records are not in chronological order: %+v", records)
+	}
+}
+
+func TestInstallSurvivesUnwritableLog(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	// Block the log location: a directory at events.jsonl makes the append
+	// fail with EISDIR. The operation must still succeed (best-effort log).
+	if err := os.MkdirAll(eventsLogPath(home), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "log-blocked", "Install must survive a blocked log")
+	if _, _, err := runCmd(t, home, "import", skillDir); err != nil {
+		t.Fatalf("import failed although the log is blocked: %v", err)
+	}
+	if _, _, err := runCmd(t, home, "install", "--mode", "copy", skillDir); err != nil {
+		t.Fatalf("install failed although the log is blocked: %v", err)
+	}
+}
+
+func TestDoctorPrintsLogPath(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	stdout, _, err := runCmd(t, home, "doctor")
+	if err != nil {
+		t.Fatalf("doctor failed: %v", err)
+	}
+	if !strings.Contains(stdout, "log:") || !strings.Contains(stdout, "events.jsonl") {
+		t.Errorf("expected doctor to print the log path, got: %q", stdout)
+	}
+
+	stdout, _, err = runCmd(t, home, "doctor", "--json")
+	if err != nil {
+		t.Fatalf("doctor --json failed: %v", err)
+	}
+	var resp struct {
+		LogPath string `json:"log_path"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse doctor --json: %v", err)
+	}
+	if !strings.HasSuffix(resp.LogPath, "events.jsonl") {
+		t.Errorf("expected log_path to end in events.jsonl, got %q", resp.LogPath)
 	}
 }
 
