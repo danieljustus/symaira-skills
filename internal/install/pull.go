@@ -94,6 +94,11 @@ func Pull(opts PullOptions) (PullResult, error) {
 	if opts.LibraryDir == "" {
 		return PullResult{}, errors.New("pull requires library directory")
 	}
+	lock, err := AcquirePullLock(opts.Target, opts.Name, opts)
+	if err != nil {
+		return PullResult{Action: "locked", Target: opts.Target, Name: opts.Name}, err
+	}
+	defer lock.Release()
 	libraryPath := filepath.Join(opts.LibraryDir, opts.Name)
 	bundle, err := skill.LoadBundle(libraryPath)
 	if err != nil {
@@ -303,11 +308,55 @@ func pullFrontmatter(source, installed map[string]any, bundle *skill.Bundle, tar
 	if err != nil {
 		return err
 	}
+	// Metadata is a map of independently-owned keys. Treating it as one
+	// top-level value would either pull overlay metadata into the source or
+	// refuse unrelated portable metadata changes.
+	sourceMeta := mapValue(source["metadata"])
+	installedMeta := mapValue(installed["metadata"])
+	metaKeys := map[string]bool{}
+	for k := range sourceMeta {
+		metaKeys[k] = true
+	}
+	for k := range installedMeta {
+		metaKeys[k] = true
+	}
+	for k := range metaKeys {
+		key := "metadata." + k
+		if equalAny(sourceMeta[k], installedMeta[k]) {
+			continue
+		}
+		if owned[key] {
+			if value, ok := overlayValues[key]; ok && equalAny(value, installedMeta[k]) {
+				continue
+			}
+			result.Refusals = append(result.Refusals, fmt.Sprintf("frontmatter key %q is owned by target overlay", key))
+			continue
+		}
+		from := sourceMeta[k]
+		if installedMeta[k] == nil {
+			delete(sourceMeta, k)
+		} else {
+			sourceMeta[k] = installedMeta[k]
+		}
+		result.FrontmatterChanges = append(result.FrontmatterChanges, PullFrontmatterChange{Key: key, From: from, To: installedMeta[k], Reason: "frontmatter"})
+	}
+	if len(sourceMeta) > 0 {
+		source["metadata"] = sourceMeta
+	} else {
+		delete(source, "metadata")
+	}
+
 	keys := map[string]bool{}
 	for k := range source {
+		if k == "metadata" {
+			continue
+		}
 		keys[k] = true
 	}
 	for k := range installed {
+		if k == "metadata" {
+			continue
+		}
 		keys[k] = true
 	}
 	for k := range keys {
@@ -344,6 +393,21 @@ func pullFrontmatter(source, installed map[string]any, bundle *skill.Bundle, tar
 	return nil
 }
 
+func mapValue(value any) map[string]any {
+	out := map[string]any{}
+	switch m := value.(type) {
+	case map[string]any:
+		for k, v := range m {
+			out[k] = v
+		}
+	case map[string]string:
+		for k, v := range m {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 func overlayFrontmatterKeys(bundle *skill.Bundle, target render.Target) (map[string]bool, map[string]any, error) {
 	owned := map[string]bool{"compatibility": true}
 	values := map[string]any{"compatibility": string(target)}
@@ -358,6 +422,7 @@ func overlayFrontmatterKeys(bundle *skill.Bundle, target render.Target) (map[str
 	}
 	for k := range cfg.Metadata {
 		owned["metadata."+k] = true
+		values["metadata."+k] = cfg.Metadata[k]
 	}
 	path := filepath.Join(bundle.Root, "overlays", string(target), "frontmatter.toml")
 	if spec, ok := render.LookupSpec(target); ok && spec.OverlayDir != "" {
@@ -523,6 +588,11 @@ func copyFilePreserve(src, dst string) error {
 // ApplyPending promotes a previously staged pull into the library. It never
 // installs to a harness target.
 func ApplyPending(opts PullOptions) error {
+	lock, err := AcquirePullLock(opts.Target, opts.Name, opts)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
 	stage, err := PendingPath(opts.Target, opts.Name, opts)
 	if err != nil {
 		return err
