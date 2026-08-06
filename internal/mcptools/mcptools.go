@@ -30,6 +30,7 @@ const emptyObject = `{"type":"object","properties":{}}`
 type Options struct {
 	LibraryDir  string
 	RenderDir   string
+	CacheDir    string
 	ProfilesDir string
 	HomeDir     string
 	ProjectDir  string
@@ -77,6 +78,9 @@ func Register(srv *mcpserver.Server, opts Options) {
 	}
 	if opts.RenderDir == "" {
 		opts.RenderDir = cfg.RenderDir
+	}
+	if opts.CacheDir == "" {
+		opts.CacheDir = cfg.CacheDir
 	}
 	if opts.ProfilesDir == "" {
 		opts.ProfilesDir = cfg.ProfilesDir
@@ -544,6 +548,7 @@ func Register(srv *mcpserver.Server, opts Options) {
 				ProjectDir: opts.ProjectDir,
 				Scope:      render.ScopeUser,
 				LibraryDir: opts.LibraryDir,
+				CacheDir:   opts.CacheDir,
 				Targets:    render.DefaultTargets(),
 				Skills:     []string{args.Name},
 			})

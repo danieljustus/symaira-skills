@@ -363,6 +363,7 @@ func staleInstalls(cfg *config.Config, name string, scope render.Scope) ([]insta
 		Scope:      scope,
 		LibraryDir: cfg.LibraryDir,
 		BaseDir:    cfg.BaseDir,
+		CacheDir:   cfg.CacheDir,
 		Targets:    render.DefaultTargets(),
 		Skills:     []string{name},
 	})

@@ -504,6 +504,110 @@ func StagingRender(bundle *skill.Bundle, targets []Target, meta ...RenderMeta) (
 	return rendered, func() { _ = os.RemoveAll(dir) }, nil
 }
 
+// CachedStagingRender reuses a persistent comparison render when the source
+// bundle fingerprint and renderer version are unchanged. The cache is never
+// used for installs; it only avoids repeating the render pipeline during
+// read-only status scans.
+func CachedStagingRender(bundle *skill.Bundle, targets []Target, cacheRoot string, meta ...RenderMeta) ([]Rendered, func(), error) {
+	if cacheRoot == "" {
+		return StagingRender(bundle, targets, meta...)
+	}
+	if len(targets) == 0 {
+		targets = DefaultTargets()
+	}
+	fingerprint, err := sourceFingerprint(bundle.Root)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	const cacheVersion = "status-render-v1"
+	var rendered []Rendered
+	var errs []error
+	for _, target := range targets {
+		keyHash := sha256.Sum256([]byte(cacheVersion + "\x00" + bundle.Root + "\x00" + string(target)))
+		key := hex.EncodeToString(keyHash[:])
+		dst := filepath.Join(cacheRoot, "status-render", key)
+		metaPath := filepath.Join(cacheRoot, "status-render", key+".json")
+		var cached struct {
+			Fingerprint string `json:"fingerprint"`
+			Target      Target `json:"target"`
+			Name        string `json:"name"`
+		}
+		data, readErr := os.ReadFile(metaPath)
+		if readErr == nil && json.Unmarshal(data, &cached) == nil && cached.Fingerprint == fingerprint && cached.Target == target && cached.Name != "" {
+			if _, err := os.Stat(filepath.Join(dst, "SKILL.md")); err == nil {
+				rendered = append(rendered, Rendered{Target: target, Name: cached.Name, Path: dst})
+				continue
+			}
+		}
+		item, rerr := RenderTarget(bundle, target, meta...)
+		if rerr != nil {
+			errs = append(errs, fmt.Errorf("target %s: %w", target, rerr))
+			continue
+		}
+		if err := writeRendered(bundle.Root, dst, item, target, fingerprint); err != nil {
+			errs = append(errs, fmt.Errorf("target %s: %w", target, err))
+			continue
+		}
+		cacheData, merr := json.Marshal(struct {
+			Fingerprint string `json:"fingerprint"`
+			Target      Target `json:"target"`
+			Name        string `json:"name"`
+		}{fingerprint, target, item.Name})
+		if merr != nil {
+			errs = append(errs, fmt.Errorf("target %s: %w", target, merr))
+			continue
+		}
+		if err := os.WriteFile(metaPath, append(cacheData, '\n'), 0o644); err != nil {
+			errs = append(errs, fmt.Errorf("target %s: %w", target, err))
+			continue
+		}
+		item.Path = dst
+		rendered = append(rendered, item)
+	}
+	if len(rendered) == 0 {
+		if len(errs) > 0 {
+			return nil, func() {}, errs[0]
+		}
+		return nil, func() {}, fmt.Errorf("no render output for the requested targets")
+	}
+	return rendered, func() {}, nil
+}
+
+// sourceFingerprint hashes all source files, including overlays and the
+// canonical SKILL.md, so cached comparison output is invalidated by any
+// input that can affect rendering.
+func sourceFingerprint(root string) (string, error) {
+	h := sha256.New()
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		h.Write([]byte(rel))
+		h.Write([]byte{0})
+		h.Write(data)
+		h.Write([]byte{0})
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 // sourceTreeHash computes a content hash of the source tree (support files
 // only; SKILL.md and symskills.toml are part of the rendered body). It is
 // expensive — it reads every support file — so callers must compute it once
