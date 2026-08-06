@@ -72,7 +72,7 @@ func TestRegisterExposesExpectedTools(t *testing.T) {
 	for _, tool := range resp.Result.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"skills_list", "skills_inspect", "skills_validate", "skills_profile_list", "skills_profile_resolve", "skills_render_plan", "skills_install", "skills_targets_status", "skills_discover_sources"} {
+	for _, want := range []string{"skills_list", "skills_inspect", "skills_validate", "skills_profile_list", "skills_profile_resolve", "skills_render_plan", "skills_install", "skills_targets_status", "skills_discover_sources", "skills_history", "skills_restore"} {
 		if !names[want] {
 			t.Fatalf("missing MCP tool %s in %#v", want, names)
 		}

@@ -11,13 +11,17 @@
 package vcs
 
 import (
+	"archive/tar"
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/danieljustus/symaira-skills/internal/fsutil"
 )
 
 // ErrUnavailable reports that git cannot be run because the binary is
@@ -145,4 +149,252 @@ func Dirty(dir string) (bool, error) {
 		return false, err
 	}
 	return strings.TrimSpace(out) != "", nil
+}
+
+// CommitInfo is one entry of a skill's history (#119). Files lists the
+// paths the commit changed relative to its parent (every tracked file for
+// the initial commit).
+type CommitInfo struct {
+	// Hash is the full commit hash.
+	Hash string `json:"revision"`
+	// Timestamp is the commit's author date in RFC3339 format.
+	Timestamp string `json:"timestamp"`
+	// Subject is the commit message first line.
+	Subject string `json:"subject"`
+	// Operation is the operation label parsed from the subject prefix
+	// (import, update, restore), or "unknown" for hand-made commits.
+	Operation string `json:"operation"`
+	// Files are the paths the commit changed.
+	Files []string `json:"files"`
+}
+
+// History returns the up to limit most recent commits of the repository
+// at dir, newest first. The operation label is parsed from the symskills
+// auto-commit message ("<operation>: ..."), falling back to "unknown" for
+// any other subject. A repository without commits yields an empty list.
+func History(dir string, limit int) ([]CommitInfo, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	// Each record is separated by \x1e and its fields by \x1f so subjects
+	// and file names can never collide with the delimiters.
+	out, err := runGit(dir, "log", "--no-color", fmt.Sprintf("-n%d", limit), "--name-only", "--format=%x1e%H%x1f%aI%x1f%s")
+	if err != nil {
+		if strings.Contains(err.Error(), "does not have any commits yet") {
+			return []CommitInfo{}, nil
+		}
+		return nil, err
+	}
+	commits := []CommitInfo{}
+	for _, chunk := range strings.Split(out, "\x1e") {
+		chunk = strings.Trim(chunk, "\n\r")
+		if chunk == "" {
+			continue
+		}
+		lines := strings.Split(chunk, "\n")
+		fields := strings.Split(lines[0], "\x1f")
+		if len(fields) < 3 {
+			continue
+		}
+		files := []string{}
+		for _, f := range lines[1:] {
+			if f = strings.TrimRight(f, "\r"); f != "" {
+				files = append(files, f)
+			}
+		}
+		commits = append(commits, CommitInfo{
+			Hash:      fields[0],
+			Timestamp: fields[1],
+			Subject:   fields[2],
+			Operation: operationFromSubject(fields[2]),
+			Files:     files,
+		})
+	}
+	return commits, nil
+}
+
+// operationFromSubject extracts the operation label from a symskills
+// auto-commit subject ("<operation>: <summary>"), falling back to
+// "unknown" for hand-made commits and anything unrecognized.
+func operationFromSubject(subject string) string {
+	op, _, ok := strings.Cut(subject, ":")
+	if !ok {
+		return "unknown"
+	}
+	switch op {
+	case "import", "update", "restore":
+		return op
+	}
+	return "unknown"
+}
+
+// Resolve expands a revision expression (full hash, prefix, HEAD, HEAD~1,
+// ...) to the full commit hash, verifying that it names a commit.
+func Resolve(dir, rev string) (string, error) {
+	out, err := runGit(dir, "rev-parse", "--verify", rev+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// ShowFile returns the content of the tracked file at path as of the
+// revision rev.
+func ShowFile(dir, rev, path string) (string, error) {
+	return runGit(dir, "show", "--no-color", rev+":"+path)
+}
+
+// TreeFiles returns the paths tracked at revision rev, in tree order.
+func TreeFiles(dir, rev string) ([]string, error) {
+	out, err := runGit(dir, "ls-tree", "-r", "--name-only", rev)
+	if err != nil {
+		return nil, err
+	}
+	files := []string{}
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimRight(line, "\r"); strings.TrimSpace(line) != "" {
+			files = append(files, line)
+		}
+	}
+	return files, nil
+}
+
+// Diff returns a unified diff of the revision rev against the current
+// working tree (tracked files only, no color).
+func Diff(dir, rev string) (string, error) {
+	return runGit(dir, "diff", "--no-color", rev)
+}
+
+// ChangedFiles returns the paths that differ between the revision rev and
+// the current working tree (tracked files only).
+func ChangedFiles(dir, rev string) ([]string, error) {
+	out, err := runGit(dir, "diff", "--name-only", "--no-color", rev)
+	if err != nil {
+		return nil, err
+	}
+	files := []string{}
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimRight(line, "\r"); strings.TrimSpace(line) != "" {
+			files = append(files, line)
+		}
+	}
+	return files, nil
+}
+
+// ExtractRev materializes the tracked tree at revision rev into dst,
+// which must not already contain the files (a fresh temp dir). The
+// repository itself is never touched — extraction reads the object store
+// via `git archive` and unpacks it with the standard library's tar
+// reader, so no external tar binary is needed. Symlinks are recreated as
+// symlinks, regular files keep their mode bits.
+func ExtractRev(dir, rev, dst string) error {
+	path, err := exec.LookPath("git")
+	if err != nil {
+		return ErrUnavailable
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	cmd := exec.Command(path, "archive", "--format=tar", rev)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	var buf, errBuf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git archive %s: %w: %s", rev, err, strings.TrimSpace(errBuf.String()))
+	}
+	dstAbs := filepath.Clean(dst)
+	tr := tar.NewReader(&buf)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		name := filepath.Clean(filepath.FromSlash(hdr.Name))
+		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("archive entry %q escapes destination", hdr.Name)
+		}
+		target := filepath.Join(dstAbs, name)
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0o777)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(f, tr); err != nil {
+				_ = f.Close()
+				return err
+			}
+			if err := f.Close(); err != nil {
+				return err
+			}
+		case tar.TypeSymlink:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			_ = os.Remove(target)
+			if err := os.Symlink(hdr.Linkname, target); err != nil {
+				return err
+			}
+		default:
+			// Skip hardlinks, devices and other exotic entry types: the
+			// tracked skill trees never contain them.
+		}
+	}
+}
+
+// Restore replaces the working tree of the repository at dir with a copy
+// of the directory src (preserving .git) and records the change as a
+// forward commit with the given message. History is never rewritten:
+// Restore only ever adds a commit on top of HEAD, exactly like Commit.
+// The copy happens in a temporary sibling first, so a failure never
+// leaves dir half-written. Returns the full hash of the new commit, or ""
+// when the resulting tree is identical to HEAD (nothing to commit).
+func Restore(dir, src, message string) (string, error) {
+	if !IsRepo(dir) {
+		return "", fmt.Errorf("not a git repository: %s", dir)
+	}
+	tmp, err := os.MkdirTemp(filepath.Dir(dir), ".restore-tmp-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(tmp)
+	if err := fsutil.CopyTree(src, tmp, func(_ string, d os.DirEntry) bool {
+		return d.Name() == ".git" && d.IsDir()
+	}); err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries {
+		if entry.Name() == ".git" {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, entry.Name())); err != nil {
+			return "", err
+		}
+	}
+	tmpEntries, err := os.ReadDir(tmp)
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range tmpEntries {
+		if err := os.Rename(filepath.Join(tmp, entry.Name()), filepath.Join(dir, entry.Name())); err != nil {
+			return "", err
+		}
+	}
+	return Commit(dir, message)
 }
