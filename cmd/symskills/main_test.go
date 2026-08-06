@@ -1568,6 +1568,86 @@ func TestDiffWithSymlinkInstallDoesNotDeleteTarget(t *testing.T) {
 	}
 }
 
+func TestDiffSymlinkReportsHarnessEdits(t *testing.T) {
+	// #123 regression: in the default symlink mode the installed path and
+	// the rendered path resolve to the same directory, so the legacy
+	// two-way comparison could never report drift. Anchored on the base
+	// snapshot, diff must report harness-side edits.
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "diff-symlink-edit", "For testing symlink diff drift")
+	if err := os.WriteFile(filepath.Join(skillDir, "notes.txt"), []byte("original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Default install mode is symlink.
+	if _, stderr, err := runCmd(t, home, "install", "--target", "opencode", skillDir); err != nil {
+		t.Fatalf("install failed: %v, stderr: %s", err, stderr)
+	}
+
+	installPath := filepath.Join(home, ".config", "opencode", "skills", "diff-symlink-edit")
+	fi, err := os.Lstat(installPath)
+	if err != nil {
+		t.Fatalf("lstat install path: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("install path is not a symlink")
+	}
+
+	// Pristine diff: nothing changed.
+	stdout, _, err := runCmd(t, home, "diff", "--target", "opencode", skillDir)
+	if err != nil {
+		t.Fatalf("diff failed: %v", err)
+	}
+	if !strings.Contains(stdout, "No changes detected.") {
+		t.Fatalf("expected no changes on pristine install, got: %q", stdout)
+	}
+
+	// Harness-side edit: modify the installed SKILL.md through the symlink.
+	installedSkill := filepath.Join(installPath, "SKILL.md")
+	if err := os.WriteFile(installedSkill, []byte("---\nname: diff-symlink-edit\ndescription: edited by hand\n---\n\n# Changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err = runCmd(t, home, "diff", "--target", "opencode", skillDir)
+	if err != nil {
+		t.Fatalf("diff failed: %v", err)
+	}
+	if !strings.Contains(stdout, "modified") || !strings.Contains(stdout, "SKILL.md") {
+		t.Fatalf("expected modified SKILL.md after harness edit, got: %q", stdout)
+	}
+
+	// Harness-side addition and deletion of support files.
+	if err := os.WriteFile(filepath.Join(installPath, "user-added.txt"), []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(installPath, "notes.txt")); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err = runCmd(t, home, "diff", "--target", "opencode", "--json", skillDir)
+	if err != nil {
+		t.Fatalf("diff --json failed: %v", err)
+	}
+	var resp []struct {
+		Path   string `json:"path"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse JSON %q: %v", stdout, err)
+	}
+	byPath := map[string]string{}
+	for _, c := range resp {
+		byPath[c.Path] = c.Status
+	}
+	if byPath["user-added.txt"] != "added" {
+		t.Errorf("expected user-added.txt added, got %q (all: %+v)", byPath["user-added.txt"], resp)
+	}
+	if byPath["notes.txt"] != "removed" {
+		t.Errorf("expected notes.txt removed, got %q (all: %+v)", byPath["notes.txt"], resp)
+	}
+}
+
 func listDirFiles(t *testing.T, dir string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
