@@ -22,6 +22,7 @@ import (
 	"github.com/danieljustus/symaira-skills/internal/profile"
 	"github.com/danieljustus/symaira-skills/internal/render"
 	"github.com/danieljustus/symaira-skills/internal/skill"
+	"github.com/danieljustus/symaira-skills/internal/vcs"
 )
 
 const emptyObject = `{"type":"object","properties":{}}`
@@ -38,6 +39,11 @@ type Options struct {
 	// EventsPath overrides the operation-log location. When empty, the log
 	// lives under HomeDir (or the default home when HomeDir is empty too).
 	EventsPath string
+	// VCSEnabled mirrors the vcs.enabled config toggle: skills_restore
+	// refuses to write to the per-skill repositories while it is false.
+	// Nil means enabled (the default), so bare Options{} in tests keeps
+	// working.
+	VCSEnabled *bool
 }
 
 // mcpJSON marshals v to JSON and returns it as a string suitable for
@@ -73,6 +79,10 @@ func Register(srv *mcpserver.Server, opts Options) {
 	}
 	if opts.ProfilesDir == "" {
 		opts.ProfilesDir = cfg.ProfilesDir
+	}
+	if opts.VCSEnabled == nil {
+		enabled := cfg.VCSEnabled()
+		opts.VCSEnabled = &enabled
 	}
 	// The operation log is a file, never console output: stdout stays
 	// reserved for JSON-RPC frames while serving MCP (AGENTS.md). The
@@ -391,6 +401,232 @@ func Register(srv *mcpserver.Server, opts Options) {
 			return mcpJSON(map[string]any{"candidates": candidates})
 		},
 	})
+	srv.RegisterTool(&mcpserver.Tool{
+		Name:        "skills_history",
+		Description: "List the versioned commit history of a library skill: revision, timestamp, operation (import/update/restore/unknown) and changed files.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"limit":{"type":"integer"}},"required":["name"]}`),
+		Handler: func(_ context.Context, in json.RawMessage) (any, error) {
+			var args struct {
+				Name  string `json:"name"`
+				Limit int    `json:"limit"`
+			}
+			if err := json.Unmarshal(in, &args); err != nil {
+				return nil, exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "parse arguments")
+			}
+			if args.Name == "" {
+				return nil, exitcodes.Wrap(fmt.Errorf("name is required"), exitcodes.ExitData, exitcodes.KindValidation, "history")
+			}
+			limit := args.Limit
+			if limit <= 0 {
+				limit = 20
+			}
+			dir := filepath.Join(opts.LibraryDir, args.Name)
+			if !vcs.IsRepo(dir) {
+				return nil, exitcodes.Wrap(fmt.Errorf("skill %q is not versioned: no git repository at %s", args.Name, dir), exitcodes.ExitData, exitcodes.KindValidation, "history")
+			}
+			history, err := vcs.History(dir, limit)
+			if err != nil {
+				return nil, exitcodes.Wrap(err, exitcodes.ExitSoftware, exitcodes.KindInternal, "read history")
+			}
+			if history == nil {
+				history = []vcs.CommitInfo{}
+			}
+			return mcpJSON(map[string]any{"name": args.Name, "history": history})
+		},
+	})
+	srv.RegisterTool(&mcpserver.Tool{
+		Name:        "skills_restore",
+		Description: "Roll a library skill's files back to a previous revision by forward commit. Dry-run defaults to true; pass dry_run=false to write. Refuses invalid restored states and never discards uncommitted changes (pass allow_dirty=true to snapshot them first); sync=true re-installs stale targets.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"rev":{"type":"string"},"dry_run":{"type":"boolean"},"allow_dirty":{"type":"boolean"},"sync":{"type":"boolean"}},"required":["name","rev"]}`),
+		Handler: func(_ context.Context, in json.RawMessage) (any, error) {
+			var args struct {
+				Name       string `json:"name"`
+				Rev        string `json:"rev"`
+				DryRun     *bool  `json:"dry_run"`
+				AllowDirty bool   `json:"allow_dirty"`
+				Sync       bool   `json:"sync"`
+			}
+			if err := json.Unmarshal(in, &args); err != nil {
+				return nil, exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "parse arguments")
+			}
+			if args.Name == "" || args.Rev == "" {
+				return nil, exitcodes.Wrap(fmt.Errorf("name and rev are required"), exitcodes.ExitData, exitcodes.KindValidation, "restore skill")
+			}
+			dryRun := true
+			if args.DryRun != nil {
+				dryRun = *args.DryRun
+			}
+			dir := filepath.Join(opts.LibraryDir, args.Name)
+			if !vcs.IsRepo(dir) {
+				return nil, exitcodes.Wrap(fmt.Errorf("skill %q is not versioned: no git repository at %s", args.Name, dir), exitcodes.ExitData, exitcodes.KindValidation, "restore skill")
+			}
+			if opts.VCSEnabled != nil && !*opts.VCSEnabled {
+				return nil, exitcodes.Wrap(fmt.Errorf("per-skill versioning is disabled (vcs.enabled = false); restore cannot write to %s", dir), exitcodes.ExitConfig, exitcodes.KindConfig, "restore skill")
+			}
+			resolved, err := vcs.Resolve(dir, args.Rev)
+			if err != nil {
+				return nil, exitcodes.Wrap(fmt.Errorf("revision %q not found: %v", args.Rev, err), exitcodes.ExitData, exitcodes.KindValidation, "restore skill")
+			}
+			dirty, err := vcs.Dirty(dir)
+			if err != nil {
+				return nil, exitcodes.Wrap(err, exitcodes.ExitSoftware, exitcodes.KindInternal, "check working tree")
+			}
+			if dirty && !args.AllowDirty {
+				return nil, exitcodes.Wrap(fmt.Errorf("skill %q has uncommitted changes; they are never discarded — pass allow_dirty=true to snapshot them into a pre-restore commit first", args.Name), exitcodes.ExitConflict, exitcodes.KindConflict, "restore skill")
+			}
+			// Materialize the target revision and validate it before any
+			// write. The tree is extracted into <tmp>/<name> so the restored
+			// frontmatter name is compared against the library directory name
+			// by the normal validation rules.
+			tmp, err := os.MkdirTemp("", "symskills-restore-*")
+			if err != nil {
+				return nil, exitcodes.Wrap(err, exitcodes.ExitSoftware, exitcodes.KindInternal, "restore skill")
+			}
+			defer os.RemoveAll(tmp)
+			restoredTree := filepath.Join(tmp, args.Name)
+			if err := vcs.ExtractRev(dir, resolved, restoredTree); err != nil {
+				return nil, exitcodes.Wrap(err, exitcodes.ExitSoftware, exitcodes.KindInternal, "extract revision")
+			}
+			if err := validateRestoredMCP(resolved, restoredTree); err != nil {
+				return nil, err
+			}
+			changed, err := vcs.ChangedFiles(dir, resolved)
+			if err != nil {
+				return nil, exitcodes.Wrap(err, exitcodes.ExitSoftware, exitcodes.KindInternal, "compare revision")
+			}
+			result := map[string]any{
+				"name":          args.Name,
+				"rev":           resolved,
+				"dry_run":       dryRun,
+				"action":        "planned",
+				"changed_files": changed,
+			}
+			if dirty {
+				result["notes"] = []string{"uncommitted changes would be committed as a pre-restore snapshot"}
+			}
+			if dryRun {
+				return mcpJSON(result)
+			}
+			if dirty {
+				if _, err := vcs.Commit(dir, fmt.Sprintf("restore: snapshot uncommitted changes before restore to %s", resolved)); err != nil {
+					return nil, exitcodes.Wrap(err, exitcodes.ExitSoftware, exitcodes.KindInternal, "snapshot uncommitted changes")
+				}
+			}
+			head, err := vcs.Restore(dir, restoredTree, fmt.Sprintf("restore: skill %s to %s", args.Name, resolved))
+			if err != nil {
+				return nil, exitcodes.Wrap(err, exitcodes.ExitSoftware, exitcodes.KindInternal, "restore skill")
+			}
+			if head == "" {
+				result["action"] = "already_at_rev"
+			} else {
+				result["action"] = "restored"
+				result["commit"] = head
+			}
+			// Report installed copies the library change made stale (#115);
+			// the scan never fails the restore, which already succeeded.
+			statuses, err := install.Status(install.StatusOptions{
+				HomeDir:    opts.HomeDir,
+				ProjectDir: opts.ProjectDir,
+				Scope:      render.ScopeUser,
+				LibraryDir: opts.LibraryDir,
+				Targets:    render.DefaultTargets(),
+				Skills:     []string{args.Name},
+			})
+			if err != nil {
+				return nil, exitcodes.Wrap(err, exitcodes.ExitSoftware, exitcodes.KindInternal, "scan installed targets")
+			}
+			var staleTargets []map[string]string
+			var stale []install.InstallStatus
+			for _, st := range statuses {
+				if st.Status != install.StatusStale {
+					continue
+				}
+				stale = append(stale, st)
+				staleTargets = append(staleTargets, map[string]string{"target": string(st.Target), "path": st.Path})
+			}
+			if len(staleTargets) > 0 {
+				result["stale_targets"] = staleTargets
+			}
+			if args.Sync && len(stale) > 0 {
+				result["sync_results"] = resyncStaleMCP(opts, stale, logger)
+			}
+			return mcpJSON(result)
+		},
+	})
+}
+
+// validateRestoredMCP loads and validates the extracted tree, refusing
+// the restore (naming every validation error) when the state is not a
+// valid skill. The caller writes nothing on error.
+func validateRestoredMCP(rev, restoredTree string) error {
+	bundle, err := skill.LoadBundle(restoredTree)
+	if err != nil {
+		return exitcodes.Wrap(fmt.Errorf("refusing restore to %s: restored state is not a valid skill: %v", rev, err), exitcodes.ExitData, exitcodes.KindValidation, "restore skill")
+	}
+	var errors []string
+	for _, issue := range skill.Validate(bundle) {
+		if issue.Severity == "error" {
+			errors = append(errors, issue.Message)
+		}
+	}
+	if len(errors) > 0 {
+		return exitcodes.Wrap(fmt.Errorf("refusing restore to %s: restored state fails validation: %s", rev, strings.Join(errors, "; ")), exitcodes.ExitData, exitcodes.KindValidation, "restore skill")
+	}
+	return nil
+}
+
+// resyncStaleMCP re-installs the given stale installs, mirroring the
+// reinstall path of `symskills sync` (the #115 resync surface).
+func resyncStaleMCP(opts Options, stale []install.InstallStatus, logger *events.Logger) []map[string]any {
+	results := []map[string]any{}
+	for _, st := range stale {
+		row := map[string]any{"target": string(st.Target), "name": st.Name}
+		bundle, err := skill.LoadBundle(filepath.Join(opts.LibraryDir, st.Name))
+		if err != nil {
+			row["action"] = "failed"
+			row["error"] = err.Error()
+			results = append(results, row)
+			continue
+		}
+		installOpts := install.Options{
+			Scope:           render.ScopeUser,
+			Mode:            st.Mode,
+			AllowExecutable: bundle.Manifest.Skill.AllowExecutable,
+		}
+		rendered, errs := render.RenderAll(bundle, opts.RenderDir, []render.Target{st.Target})
+		if len(rendered) == 0 {
+			msg := fmt.Sprintf("target %s produced no render output", st.Target)
+			if len(errs) > 0 {
+				msg = errs[0].Error()
+			}
+			logger.Record(events.Event{Event: events.EventInstall, Skill: st.Name, Target: string(st.Target), Outcome: events.OutcomeError, Error: msg, Actor: events.ActorMCP})
+			row["action"] = "failed"
+			row["error"] = msg
+			results = append(results, row)
+			continue
+		}
+		lock, lockErr := install.AcquirePullLock(st.Target, rendered[0].Name, install.PullOptions{HomeDir: opts.HomeDir})
+		if lockErr != nil {
+			row["action"] = "skipped"
+			row["error"] = lockErr.Error()
+			results = append(results, row)
+			continue
+		}
+		result, err := install.Install(install.RenderedSkill{Target: st.Target, Name: rendered[0].Name, Path: rendered[0].Path}, installOpts)
+		_ = lock.Release()
+		if err != nil {
+			logger.Record(events.Event{Event: events.EventInstall, Skill: st.Name, Target: string(st.Target), Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorMCP})
+			row["action"] = "failed"
+			row["error"] = err.Error()
+			results = append(results, row)
+			continue
+		}
+		logger.Record(events.Event{Event: events.EventInstall, Skill: result.Name, SkillVersion: bundle.Frontmatter.Version, Target: string(st.Target), Scope: string(installOpts.Scope), Mode: string(result.Mode), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorMCP})
+		row["action"] = result.Action
+		row["path"] = result.Path
+		results = append(results, row)
+	}
+	return results
 }
 
 func callInspect(_ context.Context, _ *mcpserver.Server, opts Options, in json.RawMessage) (*skill.Bundle, error) {

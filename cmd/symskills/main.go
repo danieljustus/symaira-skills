@@ -97,6 +97,9 @@ func newRootCmd(version string) *cobra.Command {
 		newValidateCmd(),
 		newRenderCmd(),
 		newDiffCmd(),
+		newHistoryCmd(),
+		newShowCmd(),
+		newRestoreCmd(),
 		newInstallCmd(),
 		newUninstallCmd(),
 		newStatusCmd(),
@@ -1474,7 +1477,8 @@ func newServeCmd(version string) *cobra.Command {
 			// stdout stays reserved for JSON-RPC frames; all diagnostics go
 			// through slog to stderr. The operation log is a file whose
 			// location is passed explicitly.
-			return mcptools.Serve(version, mcptools.Options{LibraryDir: cfg.LibraryDir, RenderDir: cfg.RenderDir, ProfilesDir: cfg.ProfilesDir, HomeDir: userHomeDir(), EventsPath: events.DefaultPath(), Version: version})
+			enabled := cfg.VCSEnabled()
+			return mcptools.Serve(version, mcptools.Options{LibraryDir: cfg.LibraryDir, RenderDir: cfg.RenderDir, ProfilesDir: cfg.ProfilesDir, HomeDir: userHomeDir(), EventsPath: events.DefaultPath(), Version: version, VCSEnabled: &enabled})
 		},
 	}
 	// stdio is the only transport, so it is always enabled. The flag is

@@ -181,6 +181,9 @@ alias = "review" # optional target-specific alias
 | `validate <skill-dir>` | Validate portable skill metadata and references |
 | `render [skill-dir]` | Render target-specific skill folders (or use `--profile <name>`) |
 | `diff <skill-dir>` | Compare rendered output with installed target |
+| `history <skill>` | List the versioned commit history of a skill (revision, timestamp, operation, changed files) |
+| `show <skill> --rev <rev>` | Show a skill's state at a past revision (`--diff` adds a diff against the current state) |
+| `restore <skill> --to <rev>` | Roll a skill's files back to a previous revision by forward commit (`--dry-run`, `--allow-dirty`, `--sync`) |
 | `install [skill-dir]` | Render and install a target-specific skill (or use `--profile <name>`) |
 | `uninstall <name>` | Remove a managed installed skill |
 | `profile list` | List available context profiles |
@@ -240,6 +243,46 @@ that matters, opt out with `vcs.enabled = false`.
 The commit history is a usable undo surface — see
 [History, Show and Restore](#history-show-and-restore) for the CLI and MCP
 commands that read and roll back revisions.
+
+## History, Show and Restore
+
+Three commands turn the per-skill repositories into a usable undo surface,
+from the CLI and from the MCP tools (`skills_history`, `skills_restore`):
+
+- `symskills history <skill> [--limit N] [--json]` lists the commits
+  newest first: revision, timestamp, the operation that produced the
+  commit (`import`, `update`, `restore`; `unknown` for hand-made commits)
+  and the files it changed.
+- `symskills show <skill> --rev <rev> [--diff] [--json]` prints the
+  skill's `SKILL.md` and resource tree exactly as committed at `--rev`
+  (any revision expression: hash, prefix, `HEAD~1`, ...). `--diff` adds a
+  unified diff of that revision against the current working tree.
+- `symskills restore <skill> --to <rev> [--dry-run] [--allow-dirty]
+  [--sync] [--json]` returns the skill's files to the state at `--rev`.
+
+How restore stays safe:
+
+- **Forward commit, never a rewrite**: the undo is `git add -A` plus a
+  commit on top of `HEAD`, exactly like every other symskills write. The
+  intermediate history stays intact and the restore commit itself can be
+  undone like any other change.
+- **Validated before writing**: the revision's tree is extracted, loaded
+  and validated first; restoring to a revision whose `SKILL.md` is
+  invalid is refused, naming every validation error.
+- **Uncommitted changes are never discarded**: a skill with uncommitted
+  local changes is refused unless `--allow-dirty` is given, which commits
+  them first as a pre-restore snapshot.
+- **`--dry-run` writes nothing**: it prints the plan — resolved revision,
+  validation result, files that would change, pending dirty snapshot.
+- **Installs stay in sync**: after a restore the installed copies are
+  stale relative to the restored library state. Every stale target is
+  reported with the `symskills sync` resync path from #115; `--sync`
+  re-installs them immediately.
+
+`skills_history` takes `name` (and optional `limit`) and returns the same
+snake_case payloads as the CLI's `--json` output. `skills_restore` takes
+`name` and `rev` (plus `dry_run`, `allow_dirty`, `sync`) and, like
+`skills_install`, defaults to dry-run: pass `dry_run=false` to write.
 
 ## Install Safety
 
@@ -320,8 +363,13 @@ Exposes:
 - `skills_profile_resolve`
 - `skills_render_plan`
 - `skills_install`
+- `skills_targets_status`
+- `skills_discover_sources`
+- `skills_history`
+- `skills_restore`
 
-`skills_install` defaults to dry-run mode. Pass `dry_run=false` to perform writes.
+`skills_install` and `skills_restore` default to dry-run mode. Pass
+`dry_run=false` to perform writes.
 
 ## Development
 
