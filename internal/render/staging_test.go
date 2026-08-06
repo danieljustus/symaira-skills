@@ -171,3 +171,40 @@ Body.
 		t.Fatal("cleanup must be non-nil even when the temp dir cannot be created")
 	}
 }
+
+func TestCachedStagingRenderReusesUnchangedBundle(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "SKILL.md"), "---\nname: cached\ndescription: Cached render test.\n---\n\nBody.\n")
+	bundle, err := skill.LoadBundle(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheRoot := t.TempDir()
+	first, cleanup, err := CachedStagingRender(bundle, []Target{TargetOpenCode}, cacheRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup()
+	if len(first) != 1 {
+		t.Fatalf("first render count: got %d", len(first))
+	}
+	info, err := os.Stat(first[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, cleanup, err := CachedStagingRender(bundle, []Target{TargetOpenCode}, cacheRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup()
+	if len(second) != 1 || second[0].Path != first[0].Path {
+		t.Fatalf("cache miss: first=%#v second=%#v", first, second)
+	}
+	secondInfo, err := os.Stat(second[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !secondInfo.ModTime().Equal(info.ModTime()) {
+		t.Fatalf("cached render directory was rewritten: first=%v second=%v", info.ModTime(), secondInfo.ModTime())
+	}
+}

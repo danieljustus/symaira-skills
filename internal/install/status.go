@@ -72,6 +72,7 @@ type StatusOptions struct {
 	Scope      render.Scope
 	LibraryDir string
 	BaseDir    string
+	CacheDir   string
 	// Targets limits the scan; empty means every registered target.
 	Targets []render.Target
 	// Skills limits the scan to these install names; empty means all.
@@ -201,7 +202,7 @@ func Status(opts StatusOptions) ([]InstallStatus, error) {
 				need = append(need, p.target)
 			}
 		}
-		rendered, cleanup, err := render.StagingRender(bundle, need)
+		rendered, cleanup, err := render.CachedStagingRender(bundle, need, opts.CacheDir)
 		if err != nil {
 			for _, p := range pend {
 				out = append(out, InstallStatus{

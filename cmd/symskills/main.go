@@ -1037,6 +1037,7 @@ can gate on drift.`,
 				Scope:      render.Scope(scopeName),
 				LibraryDir: cfg.LibraryDir,
 				BaseDir:    cfg.BaseDir,
+				CacheDir:   cfg.CacheDir,
 				Targets:    targets,
 				Skills:     skillNames,
 			})
@@ -1144,6 +1145,7 @@ The three-way classification (#126) guards the write path:
 				Scope:      render.Scope(scopeName),
 				LibraryDir: cfg.LibraryDir,
 				BaseDir:    cfg.BaseDir,
+				CacheDir:   cfg.CacheDir,
 				Targets:    targets,
 				Skills:     skillNames,
 			})
