@@ -52,6 +52,13 @@ type Options struct {
 	// AllowExecutable preserves executable bits on resource files instead
 	// of stripping them (the default install policy).
 	AllowExecutable bool `json:"allow_executable"`
+	// BaseDir overrides the base snapshot root (defaults to
+	// ~/.local/share/symskills/base). It is written on install and removed
+	// on uninstall.
+	BaseDir string `json:"base_dir,omitempty"`
+	// Target identifies the harness a skill is installed into. It is used
+	// by Diff to locate the persisted base snapshot.
+	Target render.Target `json:"target,omitempty"`
 }
 
 // ResourceModeChange describes an executable-bit change applied (or planned)
@@ -135,6 +142,9 @@ func Install(item RenderedSkill, opts Options) (Result, error) {
 		if err := writeMarker(item.Path, item, opts.Mode); err != nil {
 			return Result{}, err
 		}
+		if err := WriteBaseSnapshot(item.Path, item.Target, item.Name, opts); err != nil {
+			return Result{}, err
+		}
 		return result, nil
 	}
 	if opts.DryRun {
@@ -150,6 +160,9 @@ func Install(item RenderedSkill, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	if err := installAtomic(item, dest, &opts, &result); err != nil {
+		return Result{}, err
+	}
+	if err := WriteBaseSnapshot(item.Path, item.Target, item.Name, opts); err != nil {
 		return Result{}, err
 	}
 	return result, nil
@@ -467,6 +480,9 @@ func Uninstall(target render.Target, name string, opts Options) (removed bool, e
 		if err := os.RemoveAll(dest); err != nil {
 			return false, err
 		}
+		if err := RemoveBase(target, name, opts); err != nil {
+			return false, err
+		}
 		return true, nil
 	}
 	if _, err := os.Stat(filepath.Join(dest, markerFile)); err != nil {
@@ -475,10 +491,38 @@ func Uninstall(target render.Target, name string, opts Options) (removed bool, e
 	if err := os.RemoveAll(dest); err != nil {
 		return false, err
 	}
+	if err := RemoveBase(target, name, opts); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 
-func Diff(renderedPath, installedPath string) ([]Change, error) {
+// Diff compares a freshly rendered skill against its installed state.
+func Diff(renderedPath, installedPath string, opts Options) ([]Change, error) {
+	// #123: when the install target is a symlink into the render directory
+	// (the default symlink mode), a two-way comparison is structurally
+	// blind — both paths resolve to the same tree, so every digest matches
+	// itself and drift is never reported. When a base snapshot (#124)
+	// exists for this target/name, anchor the comparison on it instead:
+	// harness-side edits appear in installed-vs-base and library drift in
+	// rendered-vs-base. Without a base (never managed, or installed before
+	// base snapshots existed) the legacy comparison runs.
+	if opts.BaseDir != "" && opts.Target != "" && isSymlink(installedPath) {
+		baseDir, err := BasePath(opts.Target, filepath.Base(renderedPath), opts)
+		if err == nil {
+			if _, statErr := os.Stat(filepath.Join(baseDir, manifestFile)); statErr == nil {
+				return diffAgainstBase(renderedPath, installedPath, baseDir)
+			}
+		}
+	}
+	return diffTwoWay(renderedPath, installedPath)
+}
+
+// diffTwoWay is the legacy two-path comparison: the change list answers
+// "what would change if the installed tree were replaced by the rendered
+// tree" (added = only in rendered, modified = different content, removed =
+// only in installed). The install marker is excluded from both sides.
+func diffTwoWay(renderedPath, installedPath string) ([]Change, error) {
 	left, err := fileHashes(renderedPath)
 	if err != nil {
 		return nil, err
@@ -504,6 +548,72 @@ func Diff(renderedPath, installedPath string) ([]Change, error) {
 	}
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
 	return changes, nil
+}
+
+// diffAgainstBase compares both the rendered tree and the installed tree
+// against the persisted base snapshot. A file is modified when either side
+// diverges from the base; added when it exists on a side but not in the
+// base; removed when it exists only in the base. The snapshot's own
+// manifest.json is excluded from the base side.
+func diffAgainstBase(renderedPath, installedPath, baseDir string) ([]Change, error) {
+	rendered, err := fileHashes(renderedPath)
+	if err != nil {
+		return nil, err
+	}
+	installed, err := fileHashes(installedPath)
+	if err != nil {
+		return nil, err
+	}
+	base, err := fileHashes(baseDir)
+	if err != nil {
+		return nil, err
+	}
+	delete(base, manifestFile)
+
+	status := map[string]string{}
+	paths := map[string]bool{}
+	for path := range rendered {
+		paths[path] = true
+	}
+	for path := range installed {
+		paths[path] = true
+	}
+	for path := range base {
+		paths[path] = true
+	}
+	for path := range paths {
+		_, inRendered := rendered[path]
+		_, inInstalled := installed[path]
+		_, inBase := base[path]
+		switch {
+		case inBase && !inRendered && !inInstalled:
+			status[path] = "removed"
+		case !inBase && !inRendered && inInstalled:
+			status[path] = "added" // harness-side addition
+		case !inBase && inRendered:
+			status[path] = "added"
+		case inBase && inRendered && !inInstalled:
+			status[path] = "removed" // deleted from the harness side
+		case inBase && !inRendered && inInstalled:
+			status[path] = "removed" // kept only on the harness side
+		default:
+			if installed[path] != base[path] || rendered[path] != base[path] {
+				status[path] = "modified"
+			}
+		}
+	}
+	changes := []Change{}
+	for path, st := range status {
+		changes = append(changes, Change{Path: path, Status: st})
+	}
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
+	return changes, nil
+}
+
+// isSymlink reports whether path is a symbolic link (install symlink mode).
+func isSymlink(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.Mode()&os.ModeSymlink != 0
 }
 
 func fileHashes(root string) (map[string]string, error) {

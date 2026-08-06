@@ -266,7 +266,7 @@ func TestDiffReportsChangedFiles(t *testing.T) {
 	writeFile(t, filepath.Join(rendered, "SKILL.md"), "new")
 	writeFile(t, filepath.Join(installed, "SKILL.md"), "old")
 
-	changes, err := Diff(rendered, installed)
+	changes, err := Diff(rendered, installed, Options{})
 	if err != nil {
 		t.Fatalf("Diff: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestDiffSymlinkTargetDoesNotCrash(t *testing.T) {
 		t.Fatalf("Symlink: %v", err)
 	}
 
-	changes, err := Diff(rendered, installed)
+	changes, err := Diff(rendered, installed, Options{})
 	if err != nil {
 		t.Fatalf("Diff through symlink: %v", err)
 	}
