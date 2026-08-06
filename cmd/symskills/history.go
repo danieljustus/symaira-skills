@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/danieljustus/symaira-corekit/exitcodes"
 	"github.com/spf13/cobra"
@@ -381,45 +382,58 @@ func staleInstalls(cfg *config.Config, name string, scope render.Scope) ([]insta
 // reinstall path of `symskills sync` (the #115 resync surface) for the
 // listed entries. Returns one row per target.
 func resyncStaleTargets(cmd *cobra.Command, cfg *config.Config, name string, stale []install.InstallStatus, scope render.Scope, logger *events.Logger) []syncResult {
-	results := []syncResult{}
-	for _, st := range stale {
-		bundle, err := skill.LoadBundle(filepath.Join(cfg.LibraryDir, st.Name))
-		if err != nil {
-			results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "failed", Error: err.Error()})
-			continue
-		}
-		opts := install.Options{
-			Scope:           scope,
-			Mode:            st.Mode,
-			BaseDir:         cfg.BaseDir,
-			AllowExecutable: bundle.Manifest.Skill.AllowExecutable,
-		}
-		rendered, errs := render.RenderAll(bundle, cfg.RenderDir, []render.Target{st.Target})
-		if len(rendered) == 0 {
-			msg := fmt.Sprintf("target %s produced no render output", st.Target)
-			if len(errs) > 0 {
-				msg = errs[0].Error()
-			}
-			logger.Record(events.Event{Event: events.EventInstall, Skill: st.Name, Target: string(st.Target), Outcome: events.OutcomeError, Error: msg, Actor: events.ActorCLI})
-			results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "failed", Error: msg})
-			continue
-		}
-		lock, lockErr := install.AcquirePullLock(st.Target, rendered[0].Name, install.PullOptions{HomeDir: userHomeDir()})
-		if lockErr != nil {
-			results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "skipped", Error: lockErr.Error()})
-			continue
-		}
-		result, err := install.Install(install.RenderedSkill{Target: st.Target, Name: rendered[0].Name, Path: rendered[0].Path}, opts)
-		_ = lock.Release()
-		if err != nil {
-			logger.Record(events.Event{Event: events.EventInstall, Skill: st.Name, Target: string(st.Target), Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
-			results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "failed", Error: err.Error()})
-			continue
-		}
-		logger.Record(events.Event{Event: events.EventInstall, Skill: result.Name, SkillVersion: bundle.Frontmatter.Version, Target: string(st.Target), Scope: string(opts.Scope), Mode: string(result.Mode), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
-		results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: result.Path, Action: result.Action, Mode: result.Mode})
+	results := make([]syncResult, len(stale))
+	var wg sync.WaitGroup
+	var loggerMu sync.Mutex
+	for i, st := range stale {
+		wg.Add(1)
+		go func(i int, st install.InstallStatus) {
+			defer wg.Done()
+			results[i] = resyncOneStaleTarget(cmd, cfg, st, scope, logger, &loggerMu)
+		}(i, st)
 	}
+	wg.Wait()
 	return results
+}
+
+func resyncOneStaleTarget(cmd *cobra.Command, cfg *config.Config, st install.InstallStatus, scope render.Scope, logger *events.Logger, loggerMu *sync.Mutex) syncResult {
+	bundle, err := skill.LoadBundle(filepath.Join(cfg.LibraryDir, st.Name))
+	if err != nil {
+		return syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "failed", Error: err.Error()}
+	}
+	opts := install.Options{
+		Scope:           scope,
+		Mode:            st.Mode,
+		BaseDir:         cfg.BaseDir,
+		AllowExecutable: bundle.Manifest.Skill.AllowExecutable,
+	}
+	rendered, errs := render.RenderAll(bundle, cfg.RenderDir, []render.Target{st.Target})
+	if len(rendered) == 0 {
+		msg := fmt.Sprintf("target %s produced no render output", st.Target)
+		if len(errs) > 0 {
+			msg = errs[0].Error()
+		}
+		loggerMu.Lock()
+		logger.Record(events.Event{Event: events.EventInstall, Skill: st.Name, Target: string(st.Target), Outcome: events.OutcomeError, Error: msg, Actor: events.ActorCLI})
+		loggerMu.Unlock()
+		return syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "failed", Error: msg}
+	}
+	lock, lockErr := install.AcquirePullLock(st.Target, rendered[0].Name, install.PullOptions{HomeDir: userHomeDir()})
+	if lockErr != nil {
+		return syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "skipped", Error: lockErr.Error()}
+	}
+	result, err := install.Install(install.RenderedSkill{Target: st.Target, Name: rendered[0].Name, Path: rendered[0].Path}, opts)
+	_ = lock.Release()
+	if err != nil {
+		loggerMu.Lock()
+		logger.Record(events.Event{Event: events.EventInstall, Skill: st.Name, Target: string(st.Target), Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
+		loggerMu.Unlock()
+		return syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "failed", Error: err.Error()}
+	}
+	loggerMu.Lock()
+	logger.Record(events.Event{Event: events.EventInstall, Skill: result.Name, SkillVersion: bundle.Frontmatter.Version, Target: string(st.Target), Scope: string(opts.Scope), Mode: string(result.Mode), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
+	loggerMu.Unlock()
+	return syncResult{Target: st.Target, Name: st.Name, Path: result.Path, Action: result.Action, Mode: result.Mode}
 }
 
 // shortHead renders the first 8 characters of a commit hash.

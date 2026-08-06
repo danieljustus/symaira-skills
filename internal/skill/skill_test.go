@@ -13,6 +13,7 @@ func TestLoadBundleParsesFrontmatterAndManifest(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "SKILL.md"), `---
 name: sample-skill
 description: Use when testing Symaira skill parsing.
+category: Testing
 license: Apache-2.0
 metadata:
   audience: maintainers
@@ -42,6 +43,9 @@ enabled = false
 
 	if bundle.Frontmatter.Name != "sample-skill" {
 		t.Fatalf("name: want sample-skill, got %q", bundle.Frontmatter.Name)
+	}
+	if bundle.Frontmatter.Category != "Testing" {
+		t.Fatalf("category: want Testing, got %q", bundle.Frontmatter.Category)
 	}
 	if bundle.Frontmatter.Metadata["audience"] != "maintainers" {
 		t.Fatalf("metadata audience not parsed: %#v", bundle.Frontmatter.Metadata)
@@ -87,6 +91,35 @@ Body.
 	}
 	if !HasIssue(issues, "description_required") {
 		t.Fatalf("expected description_required issue, got %#v", issues)
+	}
+}
+
+func TestCategoryValidationAndCanonicalization(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "SKILL.md"), "---\nname: sample-skill\ndescription: Test\ncategory:  Data   Science \n---\nBody.\n")
+	bundle, err := LoadBundle(dir)
+	if err != nil {
+		t.Fatalf("LoadBundle: %v", err)
+	}
+	if bundle.Frontmatter.Category != "Data Science" {
+		t.Fatalf("category whitespace was not normalized: %q", bundle.Frontmatter.Category)
+	}
+	if HasIssue(Validate(bundle), "category_required") {
+		t.Fatal("a populated category must not trigger category_required")
+	}
+	missingDir := t.TempDir()
+	writeFile(t, filepath.Join(missingDir, "SKILL.md"), "---\nname: missing-category\ndescription: Test\n---\nBody.\n")
+	missing, err := LoadBundle(missingDir)
+	if err != nil {
+		t.Fatalf("LoadBundle missing category: %v", err)
+	}
+	if !HasIssue(Validate(missing), "category_required") {
+		t.Fatal("missing category should produce a validation warning")
+	}
+	other := &Bundle{Frontmatter: Frontmatter{Category: "data science"}}
+	NormalizeCategories([]*Bundle{bundle, other})
+	if other.Frontmatter.Category != "Data Science" {
+		t.Fatalf("category spelling was not snapped to existing spelling: %q", other.Frontmatter.Category)
 	}
 }
 

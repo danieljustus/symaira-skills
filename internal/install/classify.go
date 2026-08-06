@@ -73,6 +73,42 @@ func ClassifyFile(base, left, right string) DriftKind {
 	}
 }
 
+type DriftOutcome struct {
+	Status    StatusKind
+	Pullable  map[string]bool
+	Refusable map[string]bool
+}
+
+// SummarizeDrift maps the shared three-way classifications to the outcome
+// vocabulary used by both status and pull. Harness-side edits and converged
+// files are safe pull candidates; conflicts are always refused.
+func SummarizeDrift(drifts []FileDrift) DriftOutcome {
+	out := DriftOutcome{
+		Status:    StatusInSync,
+		Pullable:  map[string]bool{},
+		Refusable: map[string]bool{},
+	}
+	for _, drift := range drifts {
+		switch drift.Kind {
+		case DriftConflict:
+			out.Status = StatusConflict
+			out.Refusable[drift.Path] = true
+		case DriftHarnessChanged:
+			out.Pullable[drift.Path] = true
+			if out.Status != StatusConflict {
+				out.Status = StatusHarnessChanged
+			}
+		case DriftConverged:
+			out.Pullable[drift.Path] = true
+		case DriftLibraryChanged:
+			if out.Status == StatusInSync {
+				out.Status = StatusStale
+			}
+		}
+	}
+	return out
+}
+
 // ClassifyDrift classifies every path in the union of the three digest
 // sets. base/left/right are keyed by slash-separated relative path; a path
 // missing from a set is treated as absent (digest ""). The result is sorted

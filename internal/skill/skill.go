@@ -40,6 +40,7 @@ const (
 type Frontmatter struct {
 	Name                         string         `yaml:"name" json:"name"`
 	Description                  string         `yaml:"description" json:"description"`
+	Category                     string         `yaml:"category,omitempty" json:"category,omitempty"`
 	Version                      string         `yaml:"version,omitempty" json:"version,omitempty"`
 	Author                       string         `yaml:"author,omitempty" json:"author,omitempty"`
 	License                      string         `yaml:"license,omitempty" json:"license,omitempty"`
@@ -274,7 +275,7 @@ func (fm *Frontmatter) UnmarshalYAML(value *yaml.Node) error {
 
 func isStringFrontmatterField(name string) bool {
 	switch name {
-	case "name", "description", "version", "author", "license", "compatibility":
+	case "name", "description", "category", "version", "author", "license", "compatibility":
 		return true
 	default:
 		return false
@@ -323,7 +324,38 @@ func parseSkillMD(raw []byte) (Frontmatter, string, error) {
 	if fm.Metadata == nil {
 		fm.Metadata = map[string]any{}
 	}
+	fm.Category = NormalizeCategory(fm.Category)
 	return fm, body, nil
+}
+
+// NormalizeCategory trims and collapses whitespace without changing the
+// display spelling. Library-level canonicalization is handled by
+// NormalizeCategories, which can snap case variants to one existing spelling.
+func NormalizeCategory(category string) string {
+	return strings.Join(strings.Fields(category), " ")
+}
+
+// NormalizeCategories canonicalizes category spelling across a loaded library.
+// The first non-empty spelling wins; later case-insensitive variants reuse it.
+func NormalizeCategories(bundles []*Bundle) {
+	canonical := map[string]string{}
+	for _, bundle := range bundles {
+		if bundle == nil {
+			continue
+		}
+		category := NormalizeCategory(bundle.Frontmatter.Category)
+		if category == "" {
+			bundle.Frontmatter.Category = ""
+			continue
+		}
+		key := strings.ToLower(category)
+		if existing, ok := canonical[key]; ok {
+			bundle.Frontmatter.Category = existing
+			continue
+		}
+		canonical[key] = category
+		bundle.Frontmatter.Category = category
+	}
 }
 
 // loadFrontmatterOnly reads SKILL.md's YAML frontmatter without allocating
@@ -370,6 +402,7 @@ func loadFrontmatterOnly(root string) (Frontmatter, error) {
 	if fm.Metadata == nil {
 		fm.Metadata = map[string]any{}
 	}
+	fm.Category = NormalizeCategory(fm.Category)
 	return fm, nil
 }
 
@@ -413,6 +446,9 @@ func Validate(bundle *Bundle) []Issue {
 		issues = append(issues, Issue{Code: "description_required", Severity: "error", Message: "frontmatter description is required", Path: "SKILL.md"})
 	} else if len(bundle.Frontmatter.Description) > MaxDescriptionLength {
 		issues = append(issues, Issue{Code: "description_too_long", Severity: "error", Message: fmt.Sprintf("frontmatter description exceeds maximum length of %d characters (actual: %d)", MaxDescriptionLength, len(bundle.Frontmatter.Description)), Path: "SKILL.md"})
+	}
+	if strings.TrimSpace(bundle.Frontmatter.Category) == "" {
+		issues = append(issues, Issue{Code: "category_required", Severity: "warning", Message: "frontmatter category is required; reuse an existing category when possible", Path: "SKILL.md"})
 	}
 	if strings.TrimSpace(bundle.Body) == "" {
 		issues = append(issues, Issue{Code: "body_required", Severity: "error", Message: "SKILL.md body is empty", Path: "SKILL.md"})
@@ -682,5 +718,6 @@ func ListLibrary(libraryDir string) ([]*Bundle, []Issue) {
 		}
 		bundles = append(bundles, &Bundle{Root: abs, Frontmatter: fm, Manifest: Manifest{Targets: map[string]TargetConfig{}}})
 	}
+	NormalizeCategories(bundles)
 	return bundles, issues
 }

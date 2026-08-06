@@ -65,6 +65,7 @@ func mcpJSON(v any) (string, error) {
 type skillListItem struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Category    string `json:"category,omitempty"`
 	Root        string `json:"root"`
 	metadata.Record
 }
@@ -105,20 +106,26 @@ func Register(srv *mcpserver.Server, opts Options) {
 		Handler: func(_ context.Context, _ json.RawMessage) (any, error) {
 			bundles, issues := skill.ListLibrary(opts.LibraryDir)
 			items := make([]skillListItem, 0, len(bundles))
+			categoryCounts := map[string]int{}
 			metaOpts := metadata.Options{
 				LogPath:    logPath,
 				InstallOpt: install.Options{HomeDir: opts.HomeDir, Scope: render.ScopeUser},
 			}
 			for _, bundle := range bundles {
 				rec := metadata.Collect(bundle.Root, bundle.Frontmatter.Name, metaOpts)
+				category := bundle.Frontmatter.Category
+				if category != "" {
+					categoryCounts[category]++
+				}
 				items = append(items, skillListItem{
 					Name:        bundle.Frontmatter.Name,
 					Description: bundle.Frontmatter.Description,
+					Category:    category,
 					Root:        bundle.Root,
 					Record:      rec,
 				})
 			}
-			return mcpJSON(map[string]any{"skills": items, "issues": issues})
+			return mcpJSON(map[string]any{"skills": items, "category_counts": categoryCounts, "issues": issues})
 		},
 	})
 	srv.RegisterTool(&mcpserver.Tool{
@@ -150,11 +157,15 @@ func Register(srv *mcpserver.Server, opts Options) {
 				return nil, err
 			}
 			issues := skill.Validate(result)
-			if len(issues) > 0 {
-				messages := make([]string, 0, len(issues))
-				for _, issue := range issues {
+			hasErrors := false
+			messages := make([]string, 0, len(issues))
+			for _, issue := range issues {
+				if issue.Severity == "error" {
+					hasErrors = true
 					messages = append(messages, issue.Message)
 				}
+			}
+			if hasErrors && logger != nil {
 				logger.Record(events.Event{
 					Event:   events.EventValidateFailure,
 					Skill:   result.Frontmatter.Name,
@@ -164,7 +175,7 @@ func Register(srv *mcpserver.Server, opts Options) {
 					Actor:   events.ActorMCP,
 				})
 			}
-			return mcpJSON(map[string]any{"issues": issues})
+			return mcpJSON(map[string]any{"valid": !hasErrors, "issues": issues})
 		},
 	})
 	srv.RegisterTool(&mcpserver.Tool{
@@ -500,9 +511,13 @@ func Register(srv *mcpserver.Server, opts Options) {
 				"dry_run":       dryRun,
 				"action":        "planned",
 				"changed_files": changed,
+				"notes": []string{
+					"Restore creates a new forward commit; it never resets or rewrites history.",
+					"Run symskills sync to reinstall targets that become stale after the restore.",
+				},
 			}
 			if dirty {
-				result["notes"] = []string{"uncommitted changes would be committed as a pre-restore snapshot"}
+				result["notes"] = append(result["notes"].([]string), "Uncommitted changes would be committed as a pre-restore snapshot.")
 			}
 			if dryRun {
 				return mcpJSON(result)
