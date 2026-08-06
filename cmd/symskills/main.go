@@ -98,6 +98,8 @@ func newRootCmd(version string) *cobra.Command {
 		newDiffCmd(),
 		newInstallCmd(),
 		newUninstallCmd(),
+		newStatusCmd(),
+		newSyncCmd(),
 		newProfileCmd(),
 		newTargetsCmd(),
 		newDiscoverCmd(),
@@ -863,6 +865,214 @@ func newUninstallCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&targetName, "target", string(render.TargetOpenCode), "Target harness")
 	cmd.Flags().StringVar(&scopeName, "scope", string(render.ScopeUser), "Install scope: user or project")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
+	return cmd
+}
+
+// statusSummary aggregates a status scan into per-kind counts.
+type statusSummary struct {
+	InSync    int `json:"in_sync"`
+	Stale     int `json:"stale"`
+	Orphaned  int `json:"orphaned"`
+	Unmanaged int `json:"unmanaged"`
+}
+
+func newStatusCmd() *cobra.Command {
+	var targetName, scopeName string
+	var skillNames []string
+	var jsonOut, strict bool
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Report install health for every managed skill across harness targets",
+		Long: `Report every entry in every harness skill root as in-sync, stale,
+orphaned or unmanaged relative to the library source.
+
+  in-sync    the installed bundle matches the current library source
+  stale      the library source changed since the last install; run
+             'symskills sync' to repair
+  orphaned   the install carries a symskills marker but the library
+             source directory no longer exists; reported, never removed
+  unmanaged  a skill directory symskills never installed; never written to
+
+--strict exits non-zero when any install is stale or orphaned, so CI can
+gate on drift.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			targets, err := targetsFromFlag(targetName)
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "parse target")
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			statuses, err := install.Status(install.StatusOptions{
+				HomeDir:    userHomeDir(),
+				Scope:      render.Scope(scopeName),
+				LibraryDir: cfg.LibraryDir,
+				BaseDir:    cfg.BaseDir,
+				Targets:    targets,
+				Skills:     skillNames,
+			})
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitSoftware, exitcodes.KindInternal, "status scan")
+			}
+			summary := statusSummary{}
+			for _, st := range statuses {
+				switch st.Status {
+				case install.StatusInSync:
+					summary.InSync++
+				case install.StatusStale:
+					summary.Stale++
+				case install.StatusOrphaned:
+					summary.Orphaned++
+				case install.StatusUnmanaged:
+					summary.Unmanaged++
+				}
+				if st.Error != "" {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s/%s: %s\n", st.Target, st.Name, st.Error)
+				}
+			}
+			if jsonOut {
+				return printJSON(cmd, map[string]any{"installs": statuses, "summary": summary})
+			}
+			for _, st := range statuses {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s	%s	%s	%s\n", st.Target, st.Name, st.Status, st.Path)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Summary: %d in-sync, %d stale, %d orphaned, %d unmanaged\n", summary.InSync, summary.Stale, summary.Orphaned, summary.Unmanaged)
+			if strict && (summary.Stale > 0 || summary.Orphaned > 0) {
+				return exitcodes.Wrap(fmt.Errorf("drift detected: %d stale, %d orphaned", summary.Stale, summary.Orphaned), exitcodes.ExitData, exitcodes.KindValidation, "status check")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&targetName, "target", "all", "Target harness: all, opencode, claude, codex, hermes, antigravity, openclaw (comma-separated)")
+	cmd.Flags().StringSliceVar(&skillNames, "skill", nil, "Only report these skills (repeatable)")
+	cmd.Flags().StringVar(&scopeName, "scope", string(render.ScopeUser), "Install scope: user or project")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
+	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero when any install is stale or orphaned")
+	return cmd
+}
+
+// syncResult is one row of `symskills sync` output.
+type syncResult struct {
+	Target render.Target `json:"target"`
+	Name   string        `json:"name"`
+	Path   string        `json:"path"`
+	Action string        `json:"action"` // planned | installed | current | skipped | failed
+	Mode   install.Mode  `json:"mode,omitempty"`
+	Error  string        `json:"error,omitempty"`
+}
+
+func newSyncCmd() *cobra.Command {
+	var targetName, scopeName, profileName string
+	var skillNames []string
+	var jsonOut, dryRun bool
+	cmd := &cobra.Command{
+		Use:   "sync",
+		Short: "Re-render and re-install every stale skill install across harness targets",
+		Long: `Re-render and re-install every install that 'symskills status' reports
+stale, restoring the single-source-of-truth invariant after library edits.
+Orphaned and unmanaged installs are never touched. --dry-run prints the
+plan without writing anything.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			targets, err := targetsFromFlag(targetName)
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "parse target")
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			if profileName != "" {
+				resolved, issues, err := profile.Resolve(cfg.LibraryDir, cfg.ProfilesDir, ".", profileName)
+				if err != nil {
+					return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
+				}
+				if len(issues) > 0 {
+					return exitcodes.Wrap(fmt.Errorf("profile has unresolved issues"), exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
+				}
+				for _, rs := range resolved {
+					skillNames = append(skillNames, rs.Skill)
+				}
+			}
+			statuses, err := install.Status(install.StatusOptions{
+				HomeDir:    userHomeDir(),
+				Scope:      render.Scope(scopeName),
+				LibraryDir: cfg.LibraryDir,
+				BaseDir:    cfg.BaseDir,
+				Targets:    targets,
+				Skills:     skillNames,
+			})
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitSoftware, exitcodes.KindInternal, "status scan")
+			}
+			logger := newEventLogger()
+			results := []syncResult{}
+			for _, st := range statuses {
+				if st.Status != install.StatusStale {
+					continue
+				}
+				if st.Error != "" {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping %s/%s: %s\n", st.Target, st.Name, st.Error)
+					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "skipped", Error: st.Error})
+					continue
+				}
+				if dryRun {
+					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "planned", Mode: st.Mode})
+					continue
+				}
+				bundle, err := skill.LoadBundle(filepath.Join(cfg.LibraryDir, st.Name))
+				if err != nil {
+					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "failed", Error: err.Error()})
+					continue
+				}
+				opts := install.Options{
+					Scope:           render.Scope(scopeName),
+					Mode:            st.Mode,
+					BaseDir:         cfg.BaseDir,
+					AllowExecutable: bundle.Manifest.Skill.AllowExecutable,
+				}
+				rendered, errs := render.RenderAll(bundle, cfg.RenderDir, []render.Target{st.Target})
+				if len(rendered) == 0 {
+					msg := fmt.Sprintf("target %s produced no render output", st.Target)
+					if len(errs) > 0 {
+						msg = errs[0].Error()
+					}
+					logger.Record(events.Event{Event: events.EventInstall, Skill: st.Name, Target: string(st.Target), Scope: string(opts.Scope), Outcome: events.OutcomeError, Error: msg, Actor: events.ActorCLI})
+					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "failed", Error: msg})
+					continue
+				}
+				result, err := install.Install(install.RenderedSkill{Target: st.Target, Name: rendered[0].Name, Path: rendered[0].Path}, opts)
+				if err != nil {
+					logger.Record(events.Event{Event: events.EventInstall, Skill: st.Name, Target: string(st.Target), Scope: string(opts.Scope), Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
+					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "failed", Error: err.Error()})
+					continue
+				}
+				logger.Record(events.Event{Event: events.EventInstall, Skill: result.Name, SkillVersion: bundle.Frontmatter.Version, Target: string(st.Target), Scope: string(opts.Scope), Mode: string(result.Mode), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
+				results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: result.Path, Action: result.Action, Mode: result.Mode})
+			}
+			if jsonOut {
+				return printJSON(cmd, map[string]any{"results": results})
+			}
+			for _, r := range results {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s %s at %s\n", r.Action, r.Name, r.Path)
+				if r.Error != "" {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s/%s: %s\n", r.Target, r.Name, r.Error)
+				}
+			}
+			if len(results) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "No stale installs.")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&targetName, "target", "all", "Target harness: all, opencode, claude, codex, hermes, antigravity, openclaw (comma-separated)")
+	cmd.Flags().StringSliceVar(&skillNames, "skill", nil, "Only sync these skills (repeatable)")
+	cmd.Flags().StringVar(&profileName, "profile", "", "Only sync skills from a context profile")
+	cmd.Flags().StringVar(&scopeName, "scope", string(render.ScopeUser), "Install scope: user or project")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the sync plan without writing anything")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	return cmd
 }
