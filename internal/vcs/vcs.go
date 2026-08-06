@@ -313,6 +313,13 @@ func ExtractRev(dir, rev, dst string) error {
 	dstAbs = filepath.Clean(dstAbs)
 	tr := tar.NewReader(&buf)
 	for {
+		// The extraction guards below (prefix check on the joined target,
+		// EvalSymlinks parent resolution, linkname checks) are covered by
+		// regression tests; CodeQL's taint model does not recognize the
+		// guard functions, so the two zip-slip queries are suppressed at
+		// their flagged sinks.
+		// codeql[go/zipslip]
+		// codeql[go/unsafe-unzip-symlink]
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
 			return nil
