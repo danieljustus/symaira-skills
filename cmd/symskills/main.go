@@ -101,6 +101,7 @@ func newRootCmd(version string) *cobra.Command {
 		newUninstallCmd(),
 		newStatusCmd(),
 		newSyncCmd(),
+		newPullCmd(),
 		newProfileCmd(),
 		newTargetsCmd(),
 		newDiscoverCmd(),
@@ -713,6 +714,14 @@ func newDiffCmd() *cobra.Command {
 			}
 			for _, change := range changes {
 				fmt.Fprintf(cmd.OutOrStdout(), "%s	%s\n", change.Status, change.Path)
+				// #110: modified files carry a unified content diff so the
+				// output shows what actually changed, not just a badge.
+				if change.Diff != "" {
+					fmt.Fprint(cmd.OutOrStdout(), change.Diff)
+					if !strings.HasSuffix(change.Diff, "\n") {
+						fmt.Fprintln(cmd.OutOrStdout())
+					}
+				}
 			}
 			return nil
 		},
@@ -768,6 +777,11 @@ func newInstallCmd() *cobra.Command {
 				}
 				return exitcodes.Wrap(fmt.Errorf("target %s produced no render output", target), exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
 			}
+			lock, err := install.AcquirePullLock(target, rendered[0].Name, install.PullOptions{HomeDir: userHomeDir()})
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "lock skill")
+			}
+			defer lock.Release()
 			result, err := install.Install(install.RenderedSkill{Target: target, Name: rendered[0].Name, Path: rendered[0].Path}, opts)
 			logger := newEventLogger()
 			if err != nil {
@@ -799,6 +813,73 @@ func newInstallCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	cmd.Flags().BoolVar(&allowExecutable, "allow-executable", false, "Preserve executable bits on resource files instead of stripping them")
 	cmd.Flags().StringVar(&profileName, "profile", "", "Install all skills from a context profile")
+	return cmd
+}
+
+func newPullCmd() *cobra.Command {
+	var targetName, scopeName string
+	var dryRun, jsonOut, apply bool
+	cmd := &cobra.Command{
+		Use:   "pull <skill-name>",
+		Short: "Carry harness-side edits into the portable library staging area",
+		Long: `Compare one installed skill with its portable library source and stage
+harness-side edits for review. Overlay-produced body regions and frontmatter
+keys are refused rather than merged. Use --dry-run to print the complete plan
+without writing a pending tree.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target, err := render.ParseTarget(targetName)
+			if err != nil {
+				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "parse target")
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			pullOpts := install.PullOptions{HomeDir: userHomeDir(), Scope: render.Scope(scopeName), LibraryDir: cfg.LibraryDir, BaseDir: cfg.BaseDir, Target: target, Name: args[0], DryRun: dryRun}
+			if apply {
+				if err := install.ApplyPending(pullOpts); err != nil {
+					return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "apply pending pull")
+				}
+				if jsonOut {
+					return printJSON(cmd, install.PullResult{Action: "applied", Target: target, Name: args[0]})
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "applied %s %s\n", target, args[0])
+				return nil
+			}
+			result, err := install.Pull(pullOpts)
+			if err != nil {
+				if len(result.Refusals) > 0 {
+					for _, refusal := range result.Refusals {
+						fmt.Fprintf(cmd.ErrOrStderr(), "refused: %s\\n", refusal)
+					}
+				}
+				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "pull")
+			}
+			if jsonOut {
+				return printJSON(cmd, result)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s %s\\n", result.Action, result.Name)
+			for _, change := range result.Changes {
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\\n", change.Status, change.Path)
+			}
+			if len(result.FrontmatterChanges) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "Frontmatter changes:")
+				for _, change := range result.FrontmatterChanges {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s (%s)\\n", change.Key, change.Reason)
+				}
+			}
+			if result.StagePath != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "pending: %s\\n", result.StagePath)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&targetName, "target", string(render.TargetOpenCode), "Target harness")
+	cmd.Flags().StringVar(&scopeName, "scope", string(render.ScopeUser), "Install scope: user or project")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the pull plan without writing")
+	cmd.Flags().BoolVar(&apply, "apply", false, "Promote an existing pending pull into the library")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	return cmd
 }
 
@@ -892,10 +973,12 @@ func newUninstallCmd() *cobra.Command {
 
 // statusSummary aggregates a status scan into per-kind counts.
 type statusSummary struct {
-	InSync    int `json:"in_sync"`
-	Stale     int `json:"stale"`
-	Orphaned  int `json:"orphaned"`
-	Unmanaged int `json:"unmanaged"`
+	InSync         int `json:"in_sync"`
+	Stale          int `json:"stale"`
+	HarnessChanged int `json:"harness_changed"`
+	Conflict       int `json:"conflict"`
+	Orphaned       int `json:"orphaned"`
+	Unmanaged      int `json:"unmanaged"`
 }
 
 func newStatusCmd() *cobra.Command {
@@ -906,17 +989,21 @@ func newStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Report install health for every managed skill across harness targets",
 		Long: `Report every entry in every harness skill root as in-sync, stale,
-orphaned or unmanaged relative to the library source.
+harness-changed, conflict, orphaned or unmanaged relative to the library source.
 
-  in-sync    the installed bundle matches the current library source
-  stale      the library source changed since the last install; run
-             'symskills sync' to repair
-  orphaned   the install carries a symskills marker but the library
-             source directory no longer exists; reported, never removed
-  unmanaged  a skill directory symskills never installed; never written to
+  in-sync           the installed bundle matches the current library source
+  stale             the library source changed since the last install; run
+                    'symskills sync' to repair
+  harness-changed   the installed copy was edited on the harness side; run
+                    'symskills pull' to carry the edit back into the library
+  conflict          the library and the installed copy both changed, to
+                    different content; resolve manually
+  orphaned          the install carries a symskills marker but the library
+                    source directory no longer exists; reported, never removed
+  unmanaged         a skill directory symskills never installed; never written to
 
---strict exits non-zero when any install is stale or orphaned, so CI can
-gate on drift.`,
+--strict exits non-zero when any install is stale, conflict or orphaned, so CI
+can gate on drift.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			targets, err := targetsFromFlag(targetName)
@@ -945,6 +1032,10 @@ gate on drift.`,
 					summary.InSync++
 				case install.StatusStale:
 					summary.Stale++
+				case install.StatusHarnessChanged:
+					summary.HarnessChanged++
+				case install.StatusConflict:
+					summary.Conflict++
 				case install.StatusOrphaned:
 					summary.Orphaned++
 				case install.StatusUnmanaged:
@@ -960,9 +1051,9 @@ gate on drift.`,
 			for _, st := range statuses {
 				fmt.Fprintf(cmd.OutOrStdout(), "%s	%s	%s	%s\n", st.Target, st.Name, st.Status, st.Path)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Summary: %d in-sync, %d stale, %d orphaned, %d unmanaged\n", summary.InSync, summary.Stale, summary.Orphaned, summary.Unmanaged)
-			if strict && (summary.Stale > 0 || summary.Orphaned > 0) {
-				return exitcodes.Wrap(fmt.Errorf("drift detected: %d stale, %d orphaned", summary.Stale, summary.Orphaned), exitcodes.ExitData, exitcodes.KindValidation, "status check")
+			fmt.Fprintf(cmd.OutOrStdout(), "Summary: %d in-sync, %d stale, %d harness-changed, %d conflict, %d orphaned, %d unmanaged\n", summary.InSync, summary.Stale, summary.HarnessChanged, summary.Conflict, summary.Orphaned, summary.Unmanaged)
+			if strict && (summary.Stale > 0 || summary.Conflict > 0 || summary.Orphaned > 0) {
+				return exitcodes.Wrap(fmt.Errorf("drift detected: %d stale, %d conflict, %d orphaned", summary.Stale, summary.Conflict, summary.Orphaned), exitcodes.ExitData, exitcodes.KindValidation, "status check")
 			}
 			return nil
 		},
@@ -986,7 +1077,7 @@ type syncResult struct {
 }
 
 func newSyncCmd() *cobra.Command {
-	var targetName, scopeName, profileName string
+	var targetName, scopeName, profileName, conflictPolicy string
 	var skillNames []string
 	var jsonOut, dryRun bool
 	cmd := &cobra.Command{
@@ -995,9 +1086,21 @@ func newSyncCmd() *cobra.Command {
 		Long: `Re-render and re-install every install that 'symskills status' reports
 stale, restoring the single-source-of-truth invariant after library edits.
 Orphaned and unmanaged installs are never touched. --dry-run prints the
-plan without writing anything.`,
+plan without writing anything.
+
+The three-way classification (#126) guards the write path:
+  harness-changed  installs are never overwritten (the edit would be lost);
+                   carry them back with 'symskills pull' first
+  conflict         installs abort the run with a report naming target, skill
+                   and file, and nothing is written, unless --conflict picks
+                   prefer-source (reinstall, library wins) or prefer-target /
+                   manual (skip, harness side kept)`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			policy := install.ConflictPolicy(conflictPolicy)
+			if !install.ValidConflictPolicy(policy) {
+				return exitcodes.Wrap(fmt.Errorf("unknown conflict policy %q (abort, prefer-source, prefer-target, manual)", conflictPolicy), exitcodes.ExitConfig, exitcodes.KindValidation, "parse conflict policy")
+			}
 			targets, err := targetsFromFlag(targetName)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "parse target")
@@ -1029,13 +1132,55 @@ plan without writing anything.`,
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitSoftware, exitcodes.KindInternal, "status scan")
 			}
+			// Default policy: a conflict aborts the run before anything
+			// is written, with a report naming target, skill and file.
+			if policy == install.ConflictAbort {
+				var conflicted []install.InstallStatus
+				for _, st := range statuses {
+					if st.Status == install.StatusConflict {
+						conflicted = append(conflicted, st)
+					}
+				}
+				if len(conflicted) > 0 {
+					for _, st := range conflicted {
+						fmt.Fprintf(cmd.ErrOrStderr(), "conflict: %s/%s: %s\n", st.Target, st.Name, st.Error)
+						for _, d := range st.Drift {
+							if d.Kind == install.DriftConflict {
+								fmt.Fprintf(cmd.ErrOrStderr(), "  conflict file: %s\n", d.Path)
+							}
+						}
+					}
+					return exitcodes.Wrap(fmt.Errorf("sync aborted: %d install(s) in conflict; resolve manually or choose --conflict prefer-source|prefer-target", len(conflicted)), exitcodes.ExitData, exitcodes.KindValidation, "sync")
+				}
+			}
 			logger := newEventLogger()
 			results := []syncResult{}
 			for _, st := range statuses {
-				if st.Status != install.StatusStale {
+				if st.Status == install.StatusHarnessChanged {
+					// A harness-side edit would be destroyed by a
+					// reinstall; it is never repaired silently.
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s/%s: harness changed; run 'symskills pull' to carry the edit back into the library\n", st.Target, st.Name)
+					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "skipped", Error: "harness changed; use symskills pull"})
 					continue
 				}
-				if st.Error != "" {
+				if st.Status == install.StatusConflict {
+					// Non-abort policies. prefer-source falls through to
+					// the stale reinstall path; prefer-target and manual
+					// keep the harness side untouched.
+					if policy != install.ConflictPreferSource {
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s/%s: conflict left for resolution; library not forced over the harness edit\n", st.Target, st.Name)
+						results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "skipped", Error: "conflict; resolve manually"})
+						continue
+					}
+				}
+				// Reinstall candidates: plain stale installs (the #115
+				// push case) plus conflicts under prefer-source.
+				if st.Status != install.StatusStale && st.Status != install.StatusConflict {
+					continue
+				}
+				// The conflict summary error is the report, not a reason
+				// to skip: prefer-source resolves the conflict by design.
+				if st.Error != "" && st.Status != install.StatusConflict {
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping %s/%s: %s\n", st.Target, st.Name, st.Error)
 					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "skipped", Error: st.Error})
 					continue
@@ -1065,7 +1210,13 @@ plan without writing anything.`,
 					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "failed", Error: msg})
 					continue
 				}
+				lock, lockErr := install.AcquirePullLock(st.Target, rendered[0].Name, install.PullOptions{HomeDir: userHomeDir()})
+				if lockErr != nil {
+					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "skipped", Error: lockErr.Error()})
+					continue
+				}
 				result, err := install.Install(install.RenderedSkill{Target: st.Target, Name: rendered[0].Name, Path: rendered[0].Path}, opts)
+				_ = lock.Release()
 				if err != nil {
 					logger.Record(events.Event{Event: events.EventInstall, Skill: st.Name, Target: string(st.Target), Scope: string(opts.Scope), Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
 					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "failed", Error: err.Error()})
@@ -1093,6 +1244,7 @@ plan without writing anything.`,
 	cmd.Flags().StringSliceVar(&skillNames, "skill", nil, "Only sync these skills (repeatable)")
 	cmd.Flags().StringVar(&profileName, "profile", "", "Only sync skills from a context profile")
 	cmd.Flags().StringVar(&scopeName, "scope", string(render.ScopeUser), "Install scope: user or project")
+	cmd.Flags().StringVar(&conflictPolicy, "conflict", string(install.DefaultConflictPolicy), "Conflict policy: abort, prefer-source, prefer-target, manual")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the sync plan without writing anything")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	return cmd
