@@ -324,7 +324,7 @@ func ExtractRev(dir, rev, dst string) error {
 		target := filepath.Join(dstAbs, name)
 		// Canonical zip-slip guard on the joined target: it must stay
 		// under the destination root.
-		if target != dstAbs && !strings.HasPrefix(target, dstAbs+string(os.PathSeparator)) {
+		if target != dstAbs && !strings.HasPrefix(target, filepath.Clean(dstAbs)+string(os.PathSeparator)) {
 			return fmt.Errorf("archive entry %q escapes destination", hdr.Name)
 		}
 		// Verify the (possibly symlinked) parent still resolves inside the
@@ -359,7 +359,7 @@ func ExtractRev(dir, rev, dst string) error {
 			// destination root — an unchecked linkname could point
 			// anywhere on the machine.
 			linkPath := filepath.Clean(filepath.Join(filepath.Dir(target), filepath.FromSlash(hdr.Linkname)))
-			if filepath.IsAbs(hdr.Linkname) || !strings.HasPrefix(linkPath, dstAbs+string(os.PathSeparator)) {
+			if filepath.IsAbs(hdr.Linkname) || !strings.HasPrefix(linkPath, filepath.Clean(dstAbs)+string(os.PathSeparator)) {
 				return fmt.Errorf("archive symlink %q escapes destination", hdr.Name)
 			}
 			_ = os.Remove(target)
