@@ -1783,3 +1783,218 @@ func TestDiscoverCommandHumanReadable(t *testing.T) {
 		t.Errorf("expected empty-discovery message, got: %q", stdout)
 	}
 }
+
+func TestListJSONIncludesMetadata(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	skillDir := filepath.Join(t.TempDir(), "meta-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSkill(t, skillDir, "meta-skill", "For testing metadata")
+
+	lib := filepath.Join(home, ".local", "share", "symskills", "library")
+	if err := os.MkdirAll(lib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(skillDir, filepath.Join(lib, "meta-skill")); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, err := runCmd(t, home, "list", "--json")
+	if err != nil {
+		t.Fatalf("list --json failed: %v", err)
+	}
+	var resp struct {
+		Skills []struct {
+			Name           string  `json:"name"`
+			CreatedAt      string  `json:"created_at"`
+			ModifiedAt     string  `json:"modified_at"`
+			LastRenderedAt string  `json:"last_rendered_at"`
+			Installs       []any   `json:"installs"`
+			LastUsed       *string `json:"last_used"`
+			LastUsedSource string  `json:"last_used_source"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse JSON %q: %v", stdout, err)
+	}
+	if len(resp.Skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(resp.Skills))
+	}
+	skill := resp.Skills[0]
+	if skill.Name != "meta-skill" {
+		t.Errorf("expected meta-skill, got %q", skill.Name)
+	}
+	if skill.CreatedAt == "" {
+		t.Error("expected created_at from the filesystem")
+	}
+	if skill.ModifiedAt == "" {
+		t.Error("expected modified_at from the filesystem")
+	}
+	if skill.LastRenderedAt != "" {
+		t.Errorf("expected empty last_rendered_at without evidence, got %q", skill.LastRenderedAt)
+	}
+	if skill.Installs == nil {
+		t.Error("expected installs to be [] instead of null")
+	}
+	if len(skill.Installs) != 0 {
+		t.Errorf("expected no installs, got %v", skill.Installs)
+	}
+	if skill.LastUsed != nil {
+		t.Errorf("expected null last_used, got %q", *skill.LastUsed)
+	}
+	if skill.LastUsedSource != "" {
+		t.Errorf("expected empty last_used_source, got %q", skill.LastUsedSource)
+	}
+}
+
+func TestListSortByChanged(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+	lib := filepath.Join(home, ".local", "share", "symskills", "library")
+	if err := os.MkdirAll(lib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	old := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for name, ts := range map[string]time.Time{"old-skill": old, "new-skill": newer} {
+		dir := filepath.Join(lib, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeTestSkill(t, dir, name, "For testing sort")
+		if err := os.Chtimes(filepath.Join(dir, "SKILL.md"), ts, ts); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(dir, ts, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stdout, _, err := runCmd(t, home, "list", "--json", "--sort", "changed")
+	if err != nil {
+		t.Fatalf("list --sort changed failed: %v", err)
+	}
+	var resp struct {
+		Skills []struct {
+			Name string `json:"name"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse JSON %q: %v", stdout, err)
+	}
+	if len(resp.Skills) != 2 {
+		t.Fatalf("expected 2 skills, got %d", len(resp.Skills))
+	}
+	if resp.Skills[0].Name != "new-skill" || resp.Skills[1].Name != "old-skill" {
+		t.Errorf("expected most-recently-changed first, got %q then %q", resp.Skills[0].Name, resp.Skills[1].Name)
+	}
+
+	// Default sort is by name.
+	stdout, _, err = runCmd(t, home, "list", "--json")
+	if err != nil {
+		t.Fatalf("list --json failed: %v", err)
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse JSON %q: %v", stdout, err)
+	}
+	if resp.Skills[0].Name != "new-skill" || resp.Skills[1].Name != "old-skill" {
+		t.Errorf("expected name order, got %q then %q", resp.Skills[0].Name, resp.Skills[1].Name)
+	}
+}
+
+func TestListSortInvalid(t *testing.T) {
+	home := t.TempDir()
+	_, _, err := runCmd(t, home, "list", "--sort", "bogus")
+	if err == nil {
+		t.Fatal("expected error for invalid --sort value")
+	}
+	if !strings.Contains(err.Error(), "bogus") {
+		t.Errorf("expected sort value in error, got: %v", err)
+	}
+}
+
+func TestListTableIncludesChangedAndInstalledColumns(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+	lib := filepath.Join(home, ".local", "share", "symskills", "library")
+	if err := os.MkdirAll(lib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(lib, "table-skill")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSkill(t, dir, "table-skill", "For testing table")
+
+	stdout, _, err := runCmd(t, home, "list")
+	if err != nil {
+		t.Fatalf("list failed: %v", err)
+	}
+	fields := strings.Split(strings.TrimSpace(stdout), "\t")
+	if len(fields) != 5 {
+		t.Fatalf("expected 5 tab-separated columns, got %d: %q", len(fields), stdout)
+	}
+	if fields[2] == "" || fields[3] != "never" {
+		t.Errorf("expected changed date and never-installed column, got %q", stdout)
+	}
+}
+
+func TestInspectJSONIncludesMetadata(t *testing.T) {
+	home := t.TempDir()
+	skillDir := filepath.Join(t.TempDir(), "inspect-meta")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSkill(t, skillDir, "inspect-meta", "For testing inspect metadata")
+
+	stdout, _, err := runCmd(t, home, "inspect", "--json", skillDir)
+	if err != nil {
+		t.Fatalf("inspect --json failed: %v", err)
+	}
+	var resp struct {
+		Frontmatter struct {
+			Name string `json:"name"`
+		} `json:"frontmatter"`
+		CreatedAt      string  `json:"created_at"`
+		ModifiedAt     string  `json:"modified_at"`
+		LastRenderedAt string  `json:"last_rendered_at"`
+		Installs       []any   `json:"installs"`
+		LastUsed       *string `json:"last_used"`
+		LastUsedSource string  `json:"last_used_source"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse JSON %q: %v", stdout, err)
+	}
+	if resp.Frontmatter.Name != "inspect-meta" {
+		t.Errorf("expected inspect-meta, got %q", resp.Frontmatter.Name)
+	}
+	if resp.CreatedAt == "" || resp.ModifiedAt == "" {
+		t.Errorf("expected created_at and modified_at, got %q / %q", resp.CreatedAt, resp.ModifiedAt)
+	}
+	if resp.LastUsed != nil {
+		t.Errorf("expected null last_used, got %q", *resp.LastUsed)
+	}
+	if resp.LastUsedSource != "" {
+		t.Errorf("expected empty last_used_source, got %q", resp.LastUsedSource)
+	}
+}
+
+func TestInspectTextShowsMetadata(t *testing.T) {
+	home := t.TempDir()
+	skillDir := t.TempDir()
+	writeTestSkill(t, skillDir, "inspect-text", "For testing inspect text")
+
+	stdout, _, err := runCmd(t, home, "inspect", skillDir)
+	if err != nil {
+		t.Fatalf("inspect failed: %v", err)
+	}
+	for _, want := range []string{"Created:", "Modified:", "Last rendered:", "Installs: none", "Last used: unknown"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("expected %q in inspect output, got: %q", want, stdout)
+		}
+	}
+}

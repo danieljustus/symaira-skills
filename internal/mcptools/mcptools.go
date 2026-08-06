@@ -18,6 +18,7 @@ import (
 	"github.com/danieljustus/symaira-skills/internal/events"
 	"github.com/danieljustus/symaira-skills/internal/harness"
 	"github.com/danieljustus/symaira-skills/internal/install"
+	"github.com/danieljustus/symaira-skills/internal/metadata"
 	"github.com/danieljustus/symaira-skills/internal/profile"
 	"github.com/danieljustus/symaira-skills/internal/render"
 	"github.com/danieljustus/symaira-skills/internal/skill"
@@ -52,6 +53,16 @@ func mcpJSON(v any) (string, error) {
 	return string(data), nil
 }
 
+// skillListItem is one skills_list row: the frontmatter summary plus the
+// per-skill metadata record (same snake_case fields as `symskills list
+// --json`).
+type skillListItem struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Root        string `json:"root"`
+	metadata.Record
+}
+
 func Register(srv *mcpserver.Server, opts Options) {
 	cfg := config.Defaults()
 	if opts.LibraryDir == "" {
@@ -83,12 +94,18 @@ func Register(srv *mcpserver.Server, opts Options) {
 		InputSchema: json.RawMessage(emptyObject),
 		Handler: func(_ context.Context, _ json.RawMessage) (any, error) {
 			bundles, issues := skill.ListLibrary(opts.LibraryDir)
-			items := make([]map[string]any, 0, len(bundles))
+			items := make([]skillListItem, 0, len(bundles))
+			metaOpts := metadata.Options{
+				LogPath:    logPath,
+				InstallOpt: install.Options{HomeDir: opts.HomeDir, Scope: render.ScopeUser},
+			}
 			for _, bundle := range bundles {
-				items = append(items, map[string]any{
-					"name":        bundle.Frontmatter.Name,
-					"description": bundle.Frontmatter.Description,
-					"root":        bundle.Root,
+				rec := metadata.Collect(bundle.Root, bundle.Frontmatter.Name, metaOpts)
+				items = append(items, skillListItem{
+					Name:        bundle.Frontmatter.Name,
+					Description: bundle.Frontmatter.Description,
+					Root:        bundle.Root,
+					Record:      rec,
 				})
 			}
 			return mcpJSON(map[string]any{"skills": items, "issues": issues})
@@ -103,7 +120,14 @@ func Register(srv *mcpserver.Server, opts Options) {
 			if err != nil {
 				return nil, err
 			}
-			return mcpJSON(bundle)
+			rec := metadata.Collect(bundle.Root, bundle.Frontmatter.Name, metadata.Options{
+				LogPath:    logPath,
+				InstallOpt: install.Options{HomeDir: opts.HomeDir, Scope: render.ScopeUser},
+			})
+			return mcpJSON(struct {
+				*skill.Bundle
+				metadata.Record
+			}{bundle, rec})
 		},
 	})
 	srv.RegisterTool(&mcpserver.Tool{

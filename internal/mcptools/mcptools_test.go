@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/danieljustus/symaira-corekit/mcpserver"
+	"github.com/danieljustus/symaira-skills/internal/events"
 )
 
 func writeTestSkill(t *testing.T, dir string) {
@@ -1337,5 +1338,143 @@ func TestSkillsDiscoverSourcesMCP(t *testing.T) {
 	}
 	if len(data.Candidates) != 1 {
 		t.Fatalf("expected 1 candidate, got %d", len(data.Candidates))
+	}
+}
+
+func TestSkillsListIncludesMetadata(t *testing.T) {
+	srv := mcpserver.New("symskills", "test")
+	tmpDir := t.TempDir()
+	libDir := filepath.Join(tmpDir, "lib")
+	if err := os.MkdirAll(libDir, 0755); err != nil {
+		t.Fatalf("create lib dir: %v", err)
+	}
+	skillDir := filepath.Join(libDir, "test-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("create skill dir: %v", err)
+	}
+	writeTestSkill(t, skillDir)
+
+	// An install event in the lifecycle log supplies the install record.
+	logPath := filepath.Join(tmpDir, "events.jsonl")
+	logger := events.New(logPath, "test")
+	logger.Record(events.Event{Event: events.EventInstall, Skill: "test-skill", Target: "opencode", Path: filepath.Join(tmpDir, "skills", "test-skill"), Outcome: events.OutcomeOK})
+
+	Register(srv, Options{LibraryDir: libDir, HomeDir: tmpDir, EventsPath: logPath})
+
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"skills_list","arguments":{}}}` + "\n"
+	var out strings.Builder
+	if err := srv.ServeIO(context.Background(), strings.NewReader(req), &out); err != nil {
+		t.Fatalf("ServeIO: %v", err)
+	}
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Type string          `json:"type"`
+				Text json.RawMessage `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &resp); err != nil {
+		t.Fatalf("parse response %q: %v", out.String(), err)
+	}
+	var result struct {
+		Skills []struct {
+			Name           string `json:"name"`
+			CreatedAt      string `json:"created_at"`
+			ModifiedAt     string `json:"modified_at"`
+			LastRenderedAt string `json:"last_rendered_at"`
+			Installs       []struct {
+				Target      string `json:"target"`
+				Path        string `json:"path"`
+				InstalledAt string `json:"installed_at"`
+			} `json:"installs"`
+			LastUsed       *string `json:"last_used"`
+			LastUsedSource string  `json:"last_used_source"`
+		} `json:"skills"`
+	}
+	if err := parseText(resp.Result.Content[0].Text, &result); err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	if len(result.Skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(result.Skills))
+	}
+	skill := result.Skills[0]
+	if skill.Name != "test-skill" {
+		t.Errorf("expected test-skill, got %q", skill.Name)
+	}
+	if skill.CreatedAt == "" || skill.ModifiedAt == "" {
+		t.Errorf("expected created_at and modified_at, got %q / %q", skill.CreatedAt, skill.ModifiedAt)
+	}
+	if len(skill.Installs) != 1 {
+		t.Fatalf("expected 1 install from the event log, got %v", skill.Installs)
+	}
+	if skill.Installs[0].Target != "opencode" {
+		t.Errorf("expected opencode install, got %+v", skill.Installs[0])
+	}
+	if skill.Installs[0].InstalledAt == "" {
+		t.Error("expected installed_at from the event log")
+	}
+	if skill.LastUsed != nil {
+		t.Errorf("expected null last_used, got %q", *skill.LastUsed)
+	}
+	if skill.LastUsedSource != "" {
+		t.Errorf("expected empty last_used_source, got %q", skill.LastUsedSource)
+	}
+}
+
+func TestSkillsInspectIncludesMetadata(t *testing.T) {
+	srv := mcpserver.New("symskills", "test")
+	tmpDir := t.TempDir()
+	libDir := filepath.Join(tmpDir, "lib")
+	if err := os.MkdirAll(libDir, 0755); err != nil {
+		t.Fatalf("create lib dir: %v", err)
+	}
+	skillDir := filepath.Join(libDir, "test-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("create skill dir: %v", err)
+	}
+	writeTestSkill(t, skillDir)
+
+	Register(srv, Options{LibraryDir: libDir, HomeDir: tmpDir})
+
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"skills_inspect","arguments":{"name":"test-skill"}}}` + "\n"
+	var out strings.Builder
+	if err := srv.ServeIO(context.Background(), strings.NewReader(req), &out); err != nil {
+		t.Fatalf("ServeIO: %v", err)
+	}
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Type string          `json:"type"`
+				Text json.RawMessage `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &resp); err != nil {
+		t.Fatalf("parse response %q: %v", out.String(), err)
+	}
+	var result struct {
+		Root       string  `json:"root"`
+		CreatedAt  string  `json:"created_at"`
+		ModifiedAt string  `json:"modified_at"`
+		Installs   []any   `json:"installs"`
+		LastUsed   *string `json:"last_used"`
+	}
+	if err := parseText(resp.Result.Content[0].Text, &result); err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	if result.Root != skillDir {
+		t.Errorf("expected root %q, got %q", skillDir, result.Root)
+	}
+	if result.CreatedAt == "" || result.ModifiedAt == "" {
+		t.Errorf("expected created_at and modified_at, got %q / %q", result.CreatedAt, result.ModifiedAt)
+	}
+	if result.Installs == nil {
+		t.Error("expected installs to be an array, got null")
+	}
+	if result.LastUsed != nil {
+		t.Errorf("expected null last_used, got %q", *result.LastUsed)
 	}
 }

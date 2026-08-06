@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/danieljustus/symaira-skills/internal/harness"
 	"github.com/danieljustus/symaira-skills/internal/install"
 	"github.com/danieljustus/symaira-skills/internal/mcptools"
+	"github.com/danieljustus/symaira-skills/internal/metadata"
 	"github.com/danieljustus/symaira-skills/internal/profile"
 	"github.com/danieljustus/symaira-skills/internal/render"
 	"github.com/danieljustus/symaira-skills/internal/skill"
@@ -241,14 +243,29 @@ skill, it falls back to single-skill import.`,
 	return cmd
 }
 
+// listItem is one row of `symskills list` output: the frontmatter summary
+// plus the per-skill metadata record.
+type listItem struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Path        string `json:"path"`
+	metadata.Record
+}
+
 func newListCmd() *cobra.Command {
 	var library string
 	var jsonOut bool
 	var strict bool
+	var sortBy string
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List skills in the symskills library",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			switch sortBy {
+			case "name", "changed", "installed", "used":
+			default:
+				return exitcodes.Wrap(fmt.Errorf("invalid --sort %q: want name, changed, installed, or used", sortBy), exitcodes.ExitData, exitcodes.KindValidation, "list library")
+			}
 			cfg, err := config.Load()
 			if err != nil {
 				return err
@@ -261,20 +278,21 @@ func newListCmd() *cobra.Command {
 			if issues == nil {
 				issues = []skill.Issue{}
 			}
-			type item struct {
-				Name        string `json:"name"`
-				Description string `json:"description"`
-				Path        string `json:"path"`
+			metaOpts := metadata.Options{
+				LogPath:    events.DefaultPath(),
+				InstallOpt: install.Options{HomeDir: userHomeDir(), Scope: render.ScopeUser},
 			}
-			items := make([]item, 0, len(bundles))
+			items := make([]listItem, 0, len(bundles))
 			for _, b := range bundles {
-				items = append(items, item{Name: b.Frontmatter.Name, Description: b.Frontmatter.Description, Path: b.Root})
+				rec := metadata.Collect(b.Root, b.Frontmatter.Name, metaOpts)
+				items = append(items, listItem{Name: b.Frontmatter.Name, Description: b.Frontmatter.Description, Path: b.Root, Record: rec})
 			}
+			sortListItems(items, sortBy)
 			if jsonOut {
 				return printJSON(cmd, map[string]any{"skills": items, "issues": issues})
 			}
 			for _, item := range items {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", item.Name, item.Description, item.Path)
+				fmt.Fprintf(cmd.OutOrStdout(), "%s	%s	%s	%s	%s\n", item.Name, item.Description, shortDate(item.ModifiedAt), shortDate(latestInstallTS(item.Installs)), item.Path)
 			}
 			for _, issue := range issues {
 				if issue.Path != "" {
@@ -292,7 +310,91 @@ func newListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&library, "library", "", "Library directory")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero when library load issues exist")
+	cmd.Flags().StringVar(&sortBy, "sort", "name", "Sort by: name, changed, installed, used")
 	return cmd
+}
+
+// sortListItems orders list items by the requested key. Timestamps are
+// RFC3339 UTC; the zero time sorts last for the recency keys.
+func sortListItems(items []listItem, by string) {
+	less := func(i, j int) bool { return items[i].Name < items[j].Name }
+	switch by {
+	case "changed":
+		less = func(i, j int) bool { return tsAfter(items[i].ModifiedAt, items[j].ModifiedAt) }
+	case "installed":
+		less = func(i, j int) bool {
+			return tsAfter(latestInstallTS(items[i].Installs), latestInstallTS(items[j].Installs))
+		}
+	case "used":
+		less = func(i, j int) bool { return usedAfter(items[i].LastUsed, items[j].LastUsed) }
+	}
+	sort.SliceStable(items, less)
+}
+
+// tsAfter reports whether a is a later timestamp than b (zero sorts last).
+func tsAfter(a, b string) bool {
+	at, aok := parseRFC3339(a)
+	bt, bok := parseRFC3339(b)
+	if !aok {
+		return false
+	}
+	if !bok {
+		return true
+	}
+	return at.After(bt)
+}
+
+// usedAfter reports whether a is a later last-used time than b (nil sorts last).
+func usedAfter(a, b *time.Time) bool {
+	if a == nil {
+		return false
+	}
+	if b == nil {
+		return true
+	}
+	return a.After(*b)
+}
+
+// parseRFC3339 parses an RFC3339 timestamp, reporting ok=false on failure.
+func parseRFC3339(s string) (time.Time, bool) {
+	if s == "" {
+		return time.Time{}, false
+	}
+	ts, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return ts, true
+}
+
+// latestInstallTS returns the newest installed_at across all installs,
+// or "" when there are none.
+func latestInstallTS(installs []metadata.Install) string {
+	var best string
+	for _, inst := range installs {
+		if tsAfter(inst.InstalledAt, best) {
+			best = inst.InstalledAt
+		}
+	}
+	return best
+}
+
+// shortDate renders an RFC3339 timestamp as YYYY-MM-DD, or "never" when
+// empty, keeping the list table readable.
+func shortDate(ts string) string {
+	if ts == "" {
+		return "never"
+	}
+	return ts[:10]
+}
+
+// userHomeDir returns $HOME, or "" when it cannot be determined.
+func userHomeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
 }
 
 func isSkillDir(dir string) bool {
@@ -342,18 +444,53 @@ func newInspectCmd() *cobra.Command {
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "inspect skill")
 			}
+			rec := metadata.Collect(dir, bundle.Frontmatter.Name, metadata.Options{
+				LogPath:    events.DefaultPath(),
+				InstallOpt: install.Options{HomeDir: userHomeDir(), Scope: render.ScopeUser},
+			})
 			if jsonOut {
-				return printJSON(cmd, bundle)
+				return printJSON(cmd, struct {
+					*skill.Bundle
+					metadata.Record
+				}{bundle, rec})
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s\n%s\n", bundle.Frontmatter.Name, bundle.Frontmatter.Description)
 			if len(bundle.Resources) > 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "Resources: %d\n", len(bundle.Resources))
 			}
+			printMetadata(cmd, rec)
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	return cmd
+}
+
+// printMetadata renders the per-skill metadata record as inspect output.
+func printMetadata(cmd *cobra.Command, rec metadata.Record) {
+	fmt.Fprintf(cmd.OutOrStdout(), "Created: %s\n", orUnknown(rec.CreatedAt))
+	fmt.Fprintf(cmd.OutOrStdout(), "Modified: %s\n", orUnknown(rec.ModifiedAt))
+	fmt.Fprintf(cmd.OutOrStdout(), "Last rendered: %s\n", orUnknown(rec.LastRenderedAt))
+	if len(rec.Installs) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "Installs: none")
+	} else {
+		for _, inst := range rec.Installs {
+			fmt.Fprintf(cmd.OutOrStdout(), "Installed: %s at %s (%s)\n", inst.Target, inst.Path, orUnknown(inst.InstalledAt))
+		}
+	}
+	if rec.LastUsed == nil {
+		fmt.Fprintln(cmd.OutOrStdout(), "Last used: unknown")
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Last used: %s (source: %s)\n", rec.LastUsed.UTC().Format(time.RFC3339), rec.LastUsedSource)
+	}
+}
+
+// orUnknown renders an empty timestamp as "unknown".
+func orUnknown(ts string) string {
+	if ts == "" {
+		return "unknown"
+	}
+	return ts
 }
 
 func newValidateCmd() *cobra.Command {
@@ -920,7 +1057,7 @@ func newServeCmd(version string) *cobra.Command {
 			// stdout stays reserved for JSON-RPC frames; all diagnostics go
 			// through slog to stderr. The operation log is a file whose
 			// location is passed explicitly.
-			return mcptools.Serve(version, mcptools.Options{LibraryDir: cfg.LibraryDir, RenderDir: cfg.RenderDir, ProfilesDir: cfg.ProfilesDir, EventsPath: events.DefaultPath(), Version: version})
+			return mcptools.Serve(version, mcptools.Options{LibraryDir: cfg.LibraryDir, RenderDir: cfg.RenderDir, ProfilesDir: cfg.ProfilesDir, HomeDir: userHomeDir(), EventsPath: events.DefaultPath(), Version: version})
 		},
 	}
 	// stdio is the only transport, so it is always enabled. The flag is

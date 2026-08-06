@@ -136,7 +136,7 @@ alias = "review" # optional target-specific alias
 |---------|---------|
 | `init` | Create XDG config and data directories |
 | `import <skill-dir>` | Copy an existing skill into the managed library |
-| `list` | List managed skills |
+| `list` | List managed skills (with per-skill metadata; `--sort=name\|changed\|installed\|used`) |
 | `inspect <skill-dir>` | Show parsed SKILL.md + symskills metadata |
 | `validate <skill-dir>` | Validate portable skill metadata and references |
 | `render [skill-dir]` | Render target-specific skill folders (or use `--profile <name>`) |
@@ -171,6 +171,49 @@ Antigravity and OpenClaw paths follow their official docs
 scope both harnesses read `<project>/.agents/skills` — the same workspace
 skills directory Codex uses — so project-scope installs for those three
 targets converge on one directory, exactly as the harnesses themselves do.
+
+## Per-Skill Metadata
+
+Every library skill carries a queryable metadata record, exposed as
+`created_at`, `modified_at`, `last_rendered_at`, `installs[]` (each with
+`target`, `path`, `installed_at`), `last_used` and `last_used_source` in:
+
+- `symskills list --json` (the table output gains CHANGED and INSTALLED
+  columns; `--sort=name|changed|installed|used` orders the rows)
+- `symskills inspect` (and `inspect --json`)
+- the `skills_list` / `skills_inspect` MCP tools (same snake_case fields)
+
+The fields are derived, never guessed, and degrade cleanly when their
+source is absent (fresh install, imported library, no git history):
+
+| Field | Source |
+|-------|--------|
+| `created_at` | Skill directory mtime (filesystem). Per-skill git history will replace this once it lands; the filesystem remains the fallback. |
+| `modified_at` | Newest file mtime in the skill directory (`.git` excluded). |
+| `last_rendered_at` | Most recent successful `render` record in the lifecycle event log; falls back to the install marker's rendered-tree mtime. |
+| `installs[]` | Most recent successful `install` / `profile_install` record per target in the lifecycle event log; targets missing from the log fall back to the `.symskills.json` install marker. |
+| `last_used` | Best-effort, explicitly limited signal — see below. `null` (or `unknown` in text output) when there is no evidence; a wrong "last used" is worse than none. |
+| `last_used_source` | Name of the evidence source behind `last_used` (`install_atime`, a registered harness adapter, or empty). |
+
+### Limits of the last-used signal
+
+`symskills` cannot observe how often a harness invokes a skill: the harness
+loads the skill folder directly and `symskills` is not in that path. The
+`last_used` value is therefore best-effort by design:
+
+- The default source is the **access time of an installed copy** (`install_atime`),
+  reported only when the filesystem records a useful one (atime newer than
+  the file's own mtime, i.e. a read after the install write). On
+  `relatime`/`noatime` mounts atime is unreliable, so it is treated as one
+  possible evidence source among several, always reported alongside its
+  source, never as a guarantee.
+- An **opt-in adapter** may register additional sources that read a
+  harness's own session/skill log where one exists and is documented:
+  `metadata.RegisterUsageProbe` (name + lookup function). No adapter is
+  registered by default and symskills never fabricates usage data.
+- No network transmission, no per-invocation analytics, no counters beyond
+  a last-seen timestamp. Per-invocation tracking that would require
+  modifying the harness or injecting a wrapper is explicitly out of scope.
 
 ## MCP Tools
 
