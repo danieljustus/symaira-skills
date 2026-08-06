@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/danieljustus/symaira-skills/internal/render"
 	"github.com/danieljustus/symaira-skills/internal/skill"
@@ -23,6 +24,16 @@ const (
 	// StatusStale reports that the library source changed since the last
 	// install; `symskills sync` repairs it.
 	StatusStale StatusKind = "stale"
+	// StatusHarnessChanged reports the installed copy diverged from the
+	// base snapshot while the library did not. The edit lives on the
+	// harness side and would be lost by a reinstall; `symskills pull`
+	// carries it back into the library. It is never reported as stale.
+	StatusHarnessChanged StatusKind = "harness-changed"
+	// StatusConflict reports the library and the installed copy both
+	// diverged from the base to different content. No automatic repair
+	// exists; with the default policy `symskills sync` aborts with a
+	// report naming target, skill and file, and writes nothing.
+	StatusConflict StatusKind = "conflict"
 	// StatusOrphaned reports a symskills-managed install whose library
 	// source directory no longer exists. Orphaned installs are reported
 	// and never auto-removed.
@@ -45,8 +56,13 @@ type InstallStatus struct {
 	SourceHash  string        `json:"source_hash,omitempty"`
 	// Error carries the reason an install could not be classified or
 	// re-installed (broken bundle, failed comparison render). The status
-	// stays one of the four kinds above; sync skips entries with an error.
+	// stays one of the kinds above; sync skips entries with an error.
 	Error string `json:"error,omitempty"`
+	// Drift carries the per-file three-way classification for installs
+	// that diverge from the base snapshot (harness-changed and conflict).
+	// It names the files a pull would carry back or a conflict report
+	// must mention.
+	Drift []FileDrift `json:"drift,omitempty"`
 }
 
 // StatusOptions configures a fleet-wide status scan.
@@ -63,7 +79,8 @@ type StatusOptions struct {
 }
 
 // Status reports every entry in every target's skill root, classified as
-// in-sync, stale, orphaned or unmanaged relative to the library source.
+// in-sync, stale, harness-changed, conflict, orphaned or unmanaged relative
+// to the library source.
 //
 // The comparison signal is Marker.SourceHash — the render-cache key install
 // writes — against a freshly computed hash of the exact same form. The fresh
@@ -72,6 +89,13 @@ type StatusOptions struct {
 // computation is reused verbatim (render.StagingRender + writeRendered),
 // never reimplemented. The scan writes nothing outside the staging
 // directories, which are removed before Status returns.
+//
+// When a base snapshot (#124) exists for an install, the coarse hash
+// comparison is replaced by a per-file three-way classification (base /
+// fresh render / installed, #126) that separates library drift (stale, push
+// direction) from harness-side edits (harness-changed, pull direction) and
+// reports both-sides divergence as conflict. The hash comparison remains
+// the fallback for installs that predate base snapshots.
 func Status(opts StatusOptions) ([]InstallStatus, error) {
 	if opts.HomeDir == "" {
 		if h, err := os.UserHomeDir(); err == nil {
@@ -215,6 +239,16 @@ func Status(opts StatusOptions) ([]InstallStatus, error) {
 				out = append(out, st)
 				continue
 			}
+			// The three-way per-file classification over base / fresh render /
+			// installed digests is the authoritative signal whenever a base
+			// snapshot exists (#126): the coarse source-hash comparison cannot
+			// tell a harness-side edit from library drift and would report
+			// either as stale. Harness edits are reported as harness-changed,
+			// never as stale, so sync refuses to overwrite them.
+			if classified := classifyStatusInstall(p.target, name, p.path, f.path, p.marker, opts); classified != nil {
+				out = append(out, *classified)
+				continue
+			}
 			switch {
 			case p.marker.SourceHash == f.hash:
 				st.Status = StatusInSync
@@ -252,6 +286,59 @@ func Status(opts StatusOptions) ([]InstallStatus, error) {
 		return out[i].Name < out[j].Name
 	})
 	return out, nil
+}
+
+// classifyStatusInstall runs the three-way per-file classification for one
+// managed install against its base snapshot. It returns nil when no base
+// snapshot exists (or it cannot be read), so callers fall back to the
+// coarse source-hash comparison — the pre-#124 behavior for installs that
+// predate base snapshots.
+func classifyStatusInstall(target render.Target, name, installedPath, freshPath string, marker Marker, opts StatusOptions) *InstallStatus {
+	baseDir, err := BasePath(target, name, Options{HomeDir: opts.HomeDir, ProjectDir: opts.ProjectDir, Scope: opts.Scope, BaseDir: opts.BaseDir})
+	if err != nil {
+		return nil
+	}
+	base, err := baseHashes(baseDir)
+	if err != nil {
+		return nil
+	}
+	left, err := fileHashes(freshPath)
+	if err != nil {
+		return nil
+	}
+	right, err := fileHashes(installedPath)
+	if err != nil {
+		return nil
+	}
+	drifts := ClassifyDrift(base, left, right)
+	st := &InstallStatus{
+		Target: target, Name: name, Path: installedPath, Status: StatusInSync,
+		Mode: marker.Mode, InstalledAt: marker.Installed, SourceHash: marker.SourceHash,
+	}
+	var conflictFiles []string
+	for _, d := range drifts {
+		switch d.Kind {
+		case DriftConflict:
+			st.Status = StatusConflict
+			conflictFiles = append(conflictFiles, d.Path)
+		case DriftHarnessChanged:
+			if st.Status != StatusConflict {
+				st.Status = StatusHarnessChanged
+			}
+		case DriftLibraryChanged:
+			// Library drift alone is the plain push case (#115): stale.
+			if st.Status == StatusInSync {
+				st.Status = StatusStale
+			}
+		}
+	}
+	if st.Status == StatusConflict || st.Status == StatusHarnessChanged {
+		st.Drift = drifts
+	}
+	if st.Status == StatusConflict {
+		st.Error = fmt.Sprintf("conflict in: %s", strings.Join(conflictFiles, ", "))
+	}
+	return st
 }
 
 // readInstallMarker resolves path (following a symlink, as symlink-mode
