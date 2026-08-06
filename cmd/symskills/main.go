@@ -693,6 +693,14 @@ func newDiffCmd() *cobra.Command {
 			}
 			for _, change := range changes {
 				fmt.Fprintf(cmd.OutOrStdout(), "%s	%s\n", change.Status, change.Path)
+				// #110: modified files carry a unified content diff so the
+				// output shows what actually changed, not just a badge.
+				if change.Diff != "" {
+					fmt.Fprint(cmd.OutOrStdout(), change.Diff)
+					if !strings.HasSuffix(change.Diff, "\n") {
+						fmt.Fprintln(cmd.OutOrStdout())
+					}
+				}
 			}
 			return nil
 		},

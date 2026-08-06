@@ -157,6 +157,10 @@ public struct Change: Codable, Identifiable, Equatable, Sendable {
     public var id: String { path }
     public let path: String
     public let status: String
+    /// Unified-style content diff (rendered vs installed) for modified
+    /// files; nil when the CLI reported status only (added/removed files,
+    /// binary content, or older CLI versions).
+    public let diff: String?
 }
 
 // A dynamic JSON value parser for Frontmatter.metadata.
