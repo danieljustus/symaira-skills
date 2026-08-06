@@ -1998,3 +1998,318 @@ func TestInspectTextShowsMetadata(t *testing.T) {
 		}
 	}
 }
+
+// --- Tests for #115: status + sync ---
+
+type statusJSON struct {
+	Installs []struct {
+		Target string `json:"target"`
+		Name   string `json:"name"`
+		Path   string `json:"path"`
+		Status string `json:"status"`
+		Mode   string `json:"mode"`
+	} `json:"installs"`
+	Summary struct {
+		InSync    int `json:"in_sync"`
+		Stale     int `json:"stale"`
+		Orphaned  int `json:"orphaned"`
+		Unmanaged int `json:"unmanaged"`
+	} `json:"summary"`
+}
+
+func parseStatusJSON(t *testing.T, stdout string) statusJSON {
+	t.Helper()
+	var resp statusJSON
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("parse status JSON %q: %v", stdout, err)
+	}
+	return resp
+}
+
+func assertStatusKind(t *testing.T, resp statusJSON, target, name, want string) {
+	t.Helper()
+	for _, st := range resp.Installs {
+		if st.Target == target && st.Name == name {
+			if st.Status != want {
+				t.Fatalf("status %s/%s = %q, want %q (all: %+v)", target, name, st.Status, want, resp.Installs)
+			}
+			return
+		}
+	}
+	t.Fatalf("no install %s/%s in %+v", target, name, resp.Installs)
+}
+
+// TestStatusSyncCommand is the #115 acceptance loop: editing a library
+// skill installed into two targets makes status report both stale, sync
+// returns both to in-sync, a second sync reports no work, and
+// sync --dry-run writes nothing.
+func TestStatusSyncCommand(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	lib := filepath.Join(home, ".local", "share", "symskills", "library", "fleet-skill")
+	if err := os.MkdirAll(lib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSkill(t, lib, "fleet-skill", "Fleet status test")
+	if err := os.WriteFile(filepath.Join(lib, "notes.txt"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Install into two harness targets.
+	if _, stderr, err := runCmd(t, home, "install", "--target", "opencode", lib); err != nil {
+		t.Fatalf("install opencode: %v, stderr: %s", err, stderr)
+	}
+	if _, stderr, err := runCmd(t, home, "install", "--target", "claude", lib); err != nil {
+		t.Fatalf("install claude: %v, stderr: %s", err, stderr)
+	}
+	opencodePath := filepath.Join(home, ".config", "opencode", "skills", "fleet-skill")
+	claudePath := filepath.Join(home, ".claude", "skills", "fleet-skill")
+	renderRoot := filepath.Join(home, ".local", "share", "symskills", "rendered")
+
+	// Fresh installs report in-sync.
+	stdout, stderr, err := runCmd(t, home, "status", "--json")
+	if err != nil {
+		t.Fatalf("status: %v, stderr: %s", err, stderr)
+	}
+	resp := parseStatusJSON(t, stdout)
+	assertStatusKind(t, resp, "opencode", "fleet-skill", "in-sync")
+	assertStatusKind(t, resp, "claude", "fleet-skill", "in-sync")
+	if resp.Summary.Stale != 0 || resp.Summary.InSync != 2 {
+		t.Fatalf("unexpected summary after install: %+v", resp.Summary)
+	}
+
+	// Editing the library source makes both targets stale, naming target,
+	// skill and install path.
+	data, err := os.ReadFile(filepath.Join(lib, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lib, "SKILL.md"), append(data, []byte("\n# v2\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err = runCmd(t, home, "status", "--json")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	resp = parseStatusJSON(t, stdout)
+	assertStatusKind(t, resp, "opencode", "fleet-skill", "stale")
+	assertStatusKind(t, resp, "claude", "fleet-skill", "stale")
+	if resp.Summary.Stale != 2 {
+		t.Fatalf("expected 2 stale after edit, got %+v", resp.Summary)
+	}
+	for _, st := range resp.Installs {
+		if st.Status != "stale" {
+			continue
+		}
+		want := opencodePath
+		if st.Target == "claude" {
+			want = claudePath
+		}
+		if st.Path != want {
+			t.Errorf("stale install path = %q, want %q", st.Path, want)
+		}
+	}
+
+	// status --strict gates on drift.
+	if _, _, err := runCmd(t, home, "status", "--strict"); err == nil {
+		t.Fatal("expected status --strict to fail on drift")
+	}
+
+	// sync --dry-run prints the plan and writes nothing.
+	before := listDirFiles(t, renderRoot)
+	stdout, _, err = runCmd(t, home, "sync", "--dry-run", "--json")
+	if err != nil {
+		t.Fatalf("sync --dry-run: %v", err)
+	}
+	var plan struct {
+		Results []struct {
+			Action string `json:"action"`
+			Name   string `json:"name"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &plan); err != nil {
+		t.Fatalf("parse sync plan %q: %v", stdout, err)
+	}
+	if len(plan.Results) != 2 {
+		t.Fatalf("expected 2 planned actions, got %+v", plan.Results)
+	}
+	for _, p := range plan.Results {
+		if p.Action != "planned" {
+			t.Errorf("expected planned action, got %+v", p)
+		}
+	}
+	after := listDirFiles(t, renderRoot)
+	if len(before) != len(after) {
+		t.Fatalf("sync --dry-run changed the render cache: %d -> %d files", len(before), len(after))
+	}
+	for path, beforeHash := range before {
+		if afterHash, ok := after[path]; !ok || afterHash != beforeHash {
+			t.Fatalf("sync --dry-run modified %q in the render cache", path)
+		}
+	}
+
+	// Real sync repairs both installs.
+	stdout, stderr, err = runCmd(t, home, "sync")
+	if err != nil {
+		t.Fatalf("sync: %v, stderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "installed") {
+		t.Errorf("expected installed actions, got: %q", stdout)
+	}
+
+	// Both installs are in-sync again and a second sync reports no work.
+	stdout, _, err = runCmd(t, home, "status", "--json")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	resp = parseStatusJSON(t, stdout)
+	assertStatusKind(t, resp, "opencode", "fleet-skill", "in-sync")
+	assertStatusKind(t, resp, "claude", "fleet-skill", "in-sync")
+	if resp.Summary.Stale != 0 {
+		t.Fatalf("expected no stale after sync, got %+v", resp.Summary)
+	}
+	stdout, _, err = runCmd(t, home, "sync")
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if !strings.Contains(stdout, "No stale installs.") {
+		t.Errorf("expected no work on second sync, got: %q", stdout)
+	}
+
+	// The install mode from the original install is preserved (symlink).
+	fi, err := os.Lstat(claudePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Error("claude install is no longer a symlink after sync")
+	}
+}
+
+// TestStatusSyncOrphanedUntouched pins that an install whose library source
+// was deleted is reported orphaned and left untouched by sync.
+func TestStatusSyncOrphanedUntouched(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+	lib := filepath.Join(home, ".local", "share", "symskills", "library", "ghost-skill")
+	if err := os.MkdirAll(lib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSkill(t, lib, "ghost-skill", "Will be deleted from the library")
+	if _, stderr, err := runCmd(t, home, "install", "--target", "opencode", lib); err != nil {
+		t.Fatalf("install: %v, stderr: %s", err, stderr)
+	}
+	// The library source is deleted.
+	if err := os.RemoveAll(filepath.Join(home, ".local", "share", "symskills", "library", "ghost-skill")); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, err := runCmd(t, home, "status", "--json")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	resp := parseStatusJSON(t, stdout)
+	assertStatusKind(t, resp, "opencode", "ghost-skill", "orphaned")
+
+	// status --strict treats orphaned as drift.
+	if _, _, err := runCmd(t, home, "status", "--strict"); err == nil {
+		t.Fatal("expected status --strict to fail on orphaned install")
+	}
+
+	// sync must not remove or rewrite the orphaned install.
+	stdout, _, err = runCmd(t, home, "sync")
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if !strings.Contains(stdout, "No stale installs.") {
+		t.Errorf("expected orphaned install to be left untouched, got: %q", stdout)
+	}
+	installPath := filepath.Join(home, ".config", "opencode", "skills", "ghost-skill")
+	if _, err := os.Stat(filepath.Join(installPath, ".symskills.json")); err != nil {
+		t.Fatalf("orphaned install lost its marker: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(installPath, "SKILL.md")); err != nil {
+		t.Fatalf("orphaned install lost its content: %v", err)
+	}
+}
+
+// TestStatusSyncUnmanagedUntouched pins that hand-installed skills (no
+// marker) are reported unmanaged and never written to.
+func TestStatusSyncUnmanagedUntouched(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+	handmade := filepath.Join(home, ".config", "opencode", "skills", "handmade")
+	if err := os.MkdirAll(handmade, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSkill(t, handmade, "handmade", "Hand-written, never installed by symskills")
+
+	stdout, _, err := runCmd(t, home, "status", "--json")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	resp := parseStatusJSON(t, stdout)
+	assertStatusKind(t, resp, "opencode", "handmade", "unmanaged")
+
+	// sync must not write into the unmanaged directory.
+	if _, _, err := runCmd(t, home, "sync"); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(handmade, ".symskills.json")); !os.IsNotExist(err) {
+		t.Fatal("sync wrote a marker into an unmanaged skill")
+	}
+	data, err := os.ReadFile(filepath.Join(handmade, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "Hand-written") {
+		t.Fatalf("unmanaged skill content was modified: %q", string(data))
+	}
+}
+
+// TestStatusSyncProfileFilter pins the --profile filter on sync.
+func TestStatusSyncProfileFilter(t *testing.T) {
+	home, _, _ := setupProfileTest(t, "my-profile",
+		`name = "my-profile"
+description = "A test profile"
+
+[links]
+test-skill = { skill = "test-skill" }
+`)
+	lib := filepath.Join(home, ".local", "share", "symskills", "library", "test-skill")
+	if _, stderr, err := runCmd(t, home, "install", "--target", "opencode", lib); err != nil {
+		t.Fatalf("install: %v, stderr: %s", err, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(lib, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lib, "SKILL.md"), append(data, []byte("\n# v2\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, err := runCmd(t, home, "sync", "--profile", "my-profile", "--json")
+	if err != nil {
+		t.Fatalf("sync --profile: %v, stderr: %s", err, stderr)
+	}
+	var results struct {
+		Results []struct {
+			Name   string `json:"name"`
+			Action string `json:"action"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &results); err != nil {
+		t.Fatalf("parse sync results %q: %v", stdout, err)
+	}
+	if len(results.Results) != 1 || results.Results[0].Name != "test-skill" || results.Results[0].Action != "installed" {
+		t.Fatalf("expected one installed test-skill, got %+v", results.Results)
+	}
+
+	stdout, _, err = runCmd(t, home, "status", "--json", "--skill", "test-skill")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	resp := parseStatusJSON(t, stdout)
+	assertStatusKind(t, resp, "opencode", "test-skill", "in-sync")
+}
