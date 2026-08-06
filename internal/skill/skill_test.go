@@ -105,6 +105,65 @@ func TestValidateSkillNameAcceptsValidAndRejectsInvalidNames(t *testing.T) {
 	}
 }
 
+func TestValidateSkillNameRejectsConsecutiveAndTrailingHyphens(t *testing.T) {
+	// Previously accepted by the loose pattern, now rejected per the
+	// agentskills spec: no consecutive, leading, or trailing hyphens, max 64.
+	invalid := []string{"a--b", "ab-", "-ab", "pdf--processing", "pdf-", strings.Repeat("a", MaxNameLength+1)}
+	for _, name := range invalid {
+		if err := ValidateSkillName(name); err == nil {
+			t.Errorf("expected %q to be invalid", name)
+		}
+	}
+	valid := []string{"a-b", "ab", "pdf-processing", strings.Repeat("a", MaxNameLength)}
+	for _, name := range valid {
+		if err := ValidateSkillName(name); err != nil {
+			t.Errorf("expected %q to be valid, got %v", name, err)
+		}
+	}
+}
+
+func TestValidateNameTooLongAndDirMismatch(t *testing.T) {
+	// A name longer than 64 characters yields name_too_long.
+	longDir := filepath.Join(t.TempDir(), strings.Repeat("a", MaxNameLength+1))
+	writeFile(t, filepath.Join(longDir, "SKILL.md"), fmt.Sprintf("---\nname: %s\ndescription: test\n---\nBody\n", strings.Repeat("a", MaxNameLength+1)))
+	longBundle, err := LoadBundle(longDir)
+	if err != nil {
+		t.Fatalf("LoadBundle: %v", err)
+	}
+	longIssues := Validate(longBundle)
+	if !HasIssue(longIssues, "name_too_long") {
+		t.Fatalf("expected name_too_long issue, got %#v", longIssues)
+	}
+
+	// A valid name whose directory is named differently yields
+	// name_dir_mismatch.
+	mismatchDir := filepath.Join(t.TempDir(), "other-dir")
+	writeFile(t, filepath.Join(mismatchDir, "SKILL.md"), "---\nname: real-name\ndescription: test\n---\nBody\n")
+	mismatchBundle, err := LoadBundle(mismatchDir)
+	if err != nil {
+		t.Fatalf("LoadBundle: %v", err)
+	}
+	mismatchIssues := Validate(mismatchBundle)
+	mismatch := issueByCode(mismatchIssues, "name_dir_mismatch")
+	if mismatch == nil {
+		t.Fatalf("expected name_dir_mismatch issue, got %#v", mismatchIssues)
+	}
+	if mismatch.Severity != "error" {
+		t.Errorf("name_dir_mismatch severity: want error, got %q", mismatch.Severity)
+	}
+
+	// A matching directory name validates clean.
+	matchDir := filepath.Join(t.TempDir(), "real-name")
+	writeFile(t, filepath.Join(matchDir, "SKILL.md"), "---\nname: real-name\ndescription: test\n---\nBody\n")
+	matchBundle, err := LoadBundle(matchDir)
+	if err != nil {
+		t.Fatalf("LoadBundle: %v", err)
+	}
+	if HasIssue(Validate(matchBundle), "name_dir_mismatch") {
+		t.Fatalf("unexpected name_dir_mismatch for matching dir, got %#v", Validate(matchBundle))
+	}
+}
+
 func TestValidateDescriptionAndBodyLengthLimits(t *testing.T) {
 	// The bundle directory must match the frontmatter name so no
 	// name_dir_mismatch issue disturbs the length assertions.

@@ -16,11 +16,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var skillNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+// skillNamePattern follows the agentskills specification: lowercase
+// alphanumeric segments joined by single hyphens — no consecutive, leading,
+// or trailing hyphens (e.g. "pdf--processing" and "pdf-" are invalid).
+var skillNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // Size limits for portable skill bundles, fixed as a contract following the
 // agentskills specification rather than tuned per install.
 const (
+	// MaxNameLength caps the skill name in characters.
+	MaxNameLength = 64
 	// MaxDescriptionLength caps the frontmatter description in characters.
 	MaxDescriptionLength = 1024
 	// MaxBodyLength caps the SKILL.md markdown body in characters.
@@ -284,8 +289,11 @@ func ValidateSkillName(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("skill name is required")
 	}
+	if len(name) > MaxNameLength {
+		return fmt.Errorf("skill name %q exceeds maximum length of %d characters", name, MaxNameLength)
+	}
 	if !skillNamePattern.MatchString(name) {
-		return fmt.Errorf("skill name %q must be a single lowercase alphanumeric-dash segment", name)
+		return fmt.Errorf("skill name %q must be a single lowercase alphanumeric-dash segment without consecutive, leading, or trailing hyphens", name)
 	}
 	return nil
 }
@@ -299,8 +307,19 @@ func Validate(bundle *Bundle) []Issue {
 	name := bundle.Frontmatter.Name
 	if strings.TrimSpace(name) == "" {
 		issues = append(issues, Issue{Code: "name_required", Severity: "error", Message: "frontmatter name is required", Path: "SKILL.md"})
-	} else if !skillNamePattern.MatchString(name) {
-		issues = append(issues, Issue{Code: "name_format", Severity: "error", Message: "name must use lowercase letters, numbers, and dashes", Path: "SKILL.md"})
+	} else {
+		if len(name) > MaxNameLength {
+			issues = append(issues, Issue{Code: "name_too_long", Severity: "error", Message: fmt.Sprintf("name exceeds maximum length of %d characters (actual: %d)", MaxNameLength, len(name)), Path: "SKILL.md"})
+		}
+		if !skillNamePattern.MatchString(name) {
+			issues = append(issues, Issue{Code: "name_format", Severity: "error", Message: "name must use lowercase letters, numbers, and single dashes (no consecutive, leading, or trailing dashes)", Path: "SKILL.md"})
+		}
+		// The agentskills specification requires the skill name to match the
+		// parent directory name, which is how the library layout stores
+		// bundles (library/<name>).
+		if filepath.Base(bundle.Root) != name {
+			issues = append(issues, Issue{Code: "name_dir_mismatch", Severity: "error", Message: fmt.Sprintf("frontmatter name %q must match the parent directory name %q", name, filepath.Base(bundle.Root)), Path: "SKILL.md"})
+		}
 	}
 	if strings.TrimSpace(bundle.Frontmatter.Description) == "" {
 		issues = append(issues, Issue{Code: "description_required", Severity: "error", Message: "frontmatter description is required", Path: "SKILL.md"})
