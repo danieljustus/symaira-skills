@@ -472,6 +472,38 @@ func RenderAll(bundle *skill.Bundle, outDir string, targets []Target, meta ...Re
 // per bundle.
 var walkBundleDir = filepath.WalkDir
 
+// stagingMkdirTemp is the temporary-directory factory used by StagingRender.
+// It is a variable so tests can observe and control staging directories.
+var stagingMkdirTemp = os.MkdirTemp
+
+// StagingRender renders the bundle into a fresh temporary directory and
+// returns the rendered items together with a cleanup function that removes
+// that directory. Comparison renders (diff, and later sync) must use this
+// helper instead of writing into RenderDir, which is only written when a
+// result is actually committed: in symlink install mode RenderDir is the
+// live installed artifact, and rewriting it would destroy the very state a
+// comparison wants to read. The cleanup function must be called (typically
+// via defer) on every exit path, including error paths; when no target
+// produced output the staging directory is removed before the first render
+// error is returned. The source_hash short-circuit never fires in a fresh
+// staging directory (no marker present), so staging renders always do full
+// work.
+func StagingRender(bundle *skill.Bundle, targets []Target, meta ...RenderMeta) ([]Rendered, func(), error) {
+	dir, err := stagingMkdirTemp("", "symskills-staging-")
+	if err != nil {
+		return nil, func() {}, err
+	}
+	rendered, errs := RenderAll(bundle, dir, targets, meta...)
+	if len(rendered) == 0 {
+		_ = os.RemoveAll(dir)
+		if len(errs) > 0 {
+			return nil, func() {}, errs[0]
+		}
+		return nil, func() {}, fmt.Errorf("no render output for the requested targets")
+	}
+	return rendered, func() { _ = os.RemoveAll(dir) }, nil
+}
+
 // sourceTreeHash computes a content hash of the source tree (support files
 // only; SKILL.md and symskills.toml are part of the rendered body). It is
 // expensive — it reads every support file — so callers must compute it once
