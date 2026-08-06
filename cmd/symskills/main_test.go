@@ -2460,3 +2460,179 @@ test-skill = { skill = "test-skill" }
 	resp := parseStatusJSON(t, stdout)
 	assertStatusKind(t, resp, "opencode", "test-skill", "in-sync")
 }
+
+// --- Tests for #126: three-way drift classification at the CLI ---
+
+// setupThreeWaySkill installs one skill into opencode (copy mode) and
+// returns the installed path.
+func setupThreeWaySkill(t *testing.T, home string) (lib string, installed string) {
+	t.Helper()
+	if _, _, err := runCmd(t, home, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	lib = filepath.Join(home, ".local", "share", "symskills", "library", "threeway")
+	if err := os.MkdirAll(lib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSkill(t, lib, "threeway", "Three-way classification test")
+	if _, stderr, err := runCmd(t, home, "install", "--target", "opencode", "--mode", "copy", lib); err != nil {
+		t.Fatalf("install: %v, stderr: %s", err, stderr)
+	}
+	installed = filepath.Join(home, ".config", "opencode", "skills", "threeway")
+	return lib, installed
+}
+
+// editHarnessCopy appends a line to the installed SKILL.md (harness side).
+func editHarnessCopy(t *testing.T, installed string) {
+	t.Helper()
+	path := filepath.Join(installed, "SKILL.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, []byte("\nharness edit\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSyncSkipsHarnessChanged: a harness-side edit is reported as
+// harness-changed and sync refuses to overwrite it; the edit survives.
+func TestSyncSkipsHarnessChanged(t *testing.T) {
+	home := t.TempDir()
+	_, installed := setupThreeWaySkill(t, home)
+
+	editHarnessCopy(t, installed)
+
+	stdout, _, err := runCmd(t, home, "status", "--json")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	resp := parseStatusJSON(t, stdout)
+	assertStatusKind(t, resp, "opencode", "threeway", "harness-changed")
+
+	// sync must not repair it: the edited copy stays intact.
+	stdout, stderr, err := runCmd(t, home, "sync", "--json")
+	if err != nil {
+		t.Fatalf("sync: %v, stderr: %s", err, stderr)
+	}
+	if !strings.Contains(stderr, "harness changed") {
+		t.Errorf("expected harness-changed warning on stderr, got: %s", stderr)
+	}
+	var syncResp struct {
+		Results []struct {
+			Target string `json:"target"`
+			Name   string `json:"name"`
+			Action string `json:"action"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &syncResp); err != nil {
+		t.Fatalf("parse sync JSON: %v", err)
+	}
+	if len(syncResp.Results) != 1 || syncResp.Results[0].Action != "skipped" {
+		t.Fatalf("expected one skipped result, got %+v", syncResp.Results)
+	}
+	data, err := os.ReadFile(filepath.Join(installed, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "harness edit") {
+		t.Fatal("harness edit was destroyed by sync")
+	}
+}
+
+// TestSyncConflictAbortsWithReport: with the default policy a conflict
+// aborts the run naming target, skill and file, and writes nothing.
+func TestSyncConflictAbortsWithReport(t *testing.T) {
+	home := t.TempDir()
+	lib, installed := setupThreeWaySkill(t, home)
+
+	// Library changes...
+	libSkill := filepath.Join(lib, "SKILL.md")
+	data, err := os.ReadFile(libSkill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(libSkill, append(data, []byte("\nlibrary edit\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// ...and the installed copy changes differently.
+	editHarnessCopy(t, installed)
+
+	stdout, _, err := runCmd(t, home, "status", "--json")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	resp := parseStatusJSON(t, stdout)
+	assertStatusKind(t, resp, "opencode", "threeway", "conflict")
+
+	// Default policy: sync aborts, nothing is written.
+	before, err := os.ReadFile(filepath.Join(installed, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, err := runCmd(t, home, "sync")
+	if err == nil {
+		t.Fatal("expected sync to abort on conflict")
+	}
+	if !strings.Contains(stderr, "threeway") {
+		t.Errorf("conflict report must name the skill, stderr: %s", stderr)
+	}
+	if !strings.Contains(stderr, "SKILL.md") {
+		t.Errorf("conflict report must name the file, stderr: %s", stderr)
+	}
+	after, err := os.ReadFile(filepath.Join(installed, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("sync wrote something despite the conflict abort")
+	}
+}
+
+// TestSyncConflictPreferSource: an explicit prefer-source policy lets the
+// library win; the harness edit is replaced and the install is in-sync.
+func TestSyncConflictPreferSource(t *testing.T) {
+	home := t.TempDir()
+	lib, installed := setupThreeWaySkill(t, home)
+
+	libSkill := filepath.Join(lib, "SKILL.md")
+	data, err := os.ReadFile(libSkill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(libSkill, append(data, []byte("\nlibrary edit\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	editHarnessCopy(t, installed)
+
+	if _, stderr, err := runCmd(t, home, "sync", "--conflict", "prefer-source"); err != nil {
+		t.Fatalf("sync --conflict prefer-source: %v, stderr: %s", err, stderr)
+	}
+	stdout, _, err := runCmd(t, home, "status", "--json")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	resp := parseStatusJSON(t, stdout)
+	assertStatusKind(t, resp, "opencode", "threeway", "in-sync")
+}
+
+// TestStatusStrictFailsOnConflict pins that --strict treats conflict as
+// drift (CI gate).
+func TestStatusStrictFailsOnConflict(t *testing.T) {
+	home := t.TempDir()
+	lib, installed := setupThreeWaySkill(t, home)
+
+	libSkill := filepath.Join(lib, "SKILL.md")
+	data, err := os.ReadFile(libSkill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(libSkill, append(data, []byte("\nlibrary edit\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	editHarnessCopy(t, installed)
+
+	if _, _, err := runCmd(t, home, "status", "--strict"); err == nil {
+		t.Fatal("expected status --strict to fail on conflict")
+	}
+}
