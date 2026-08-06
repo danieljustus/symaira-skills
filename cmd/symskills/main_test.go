@@ -301,7 +301,12 @@ func TestInspectCommand(t *testing.T) {
 
 func TestValidateCommand(t *testing.T) {
 	home := t.TempDir()
-	skillDir := t.TempDir()
+	// The bundle directory must match the frontmatter name (agentskills
+	// spec requirement enforced as name_dir_mismatch).
+	skillDir := filepath.Join(t.TempDir(), "validate-test")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	writeTestSkill(t, skillDir, "validate-test", "For testing validate")
 
 	// Validate standard
@@ -329,7 +334,10 @@ func TestValidateCommand(t *testing.T) {
 	}
 
 	// Validate invalid skill
-	invalidDir := t.TempDir()
+	invalidDir := filepath.Join(t.TempDir(), "bad-skill")
+	if err := os.MkdirAll(invalidDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	// Write invalid SKILL.md (missing description)
 	err = os.WriteFile(filepath.Join(invalidDir, "SKILL.md"), []byte("---\nname: bad-skill\ndescription: \"\"\n---\nbody\n"), 0o644)
 	if err != nil {
@@ -472,7 +480,10 @@ func TestOmittedSkillDirDefaultsToCwd(t *testing.T) {
 	home := t.TempDir()
 	_, _, _ = runCmd(t, home, "init")
 
-	skillDir := t.TempDir()
+	skillDir := filepath.Join(t.TempDir(), "cwd-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	writeTestSkill(t, skillDir, "cwd-skill", "Testing cwd default")
 
 	oldWd, err := os.Getwd()
@@ -1170,7 +1181,10 @@ func TestListJSONEmitsEmptyIssuesArray(t *testing.T) {
 
 func TestValidateJSONEmitsEmptyIssuesArray(t *testing.T) {
 	home := t.TempDir()
-	skillDir := t.TempDir()
+	skillDir := filepath.Join(t.TempDir(), "valid-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	writeTestSkill(t, skillDir, "valid-skill", "For testing validate JSON issues array")
 
 	stdout, _, err := runCmd(t, home, "validate", "--json", skillDir)

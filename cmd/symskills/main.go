@@ -310,6 +310,9 @@ func newInspectCmd() *cobra.Command {
 				return printJSON(cmd, bundle)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s\n%s\n", bundle.Frontmatter.Name, bundle.Frontmatter.Description)
+			if len(bundle.Resources) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Resources: %d\n", len(bundle.Resources))
+			}
 			return nil
 		},
 	}
@@ -340,7 +343,7 @@ func newValidateCmd() *cobra.Command {
 			if issues == nil {
 				issues = []skill.Issue{}
 			}
-			result := map[string]any{"valid": len(issues) == 0, "issues": issues}
+			result := map[string]any{"valid": len(issues) == 0, "issues": issues, "resources": bundle.Resources}
 			if jsonOut {
 				return printJSON(cmd, result)
 			}
@@ -504,7 +507,7 @@ func newDiffCmd() *cobra.Command {
 
 func newInstallCmd() *cobra.Command {
 	var targetName, output, scopeName, modeName, profileName string
-	var jsonOut, dryRun, force bool
+	var jsonOut, dryRun, force, allowExecutable bool
 	cmd := &cobra.Command{
 		Use:   "install [skill-dir]",
 		Short: "Render and install a skill or profile into a supported harness",
@@ -522,7 +525,7 @@ func newInstallCmd() *cobra.Command {
 			if out == "" {
 				out = cfg.RenderDir
 			}
-			opts := install.Options{Scope: render.Scope(scopeName), Mode: install.Mode(modeName), DryRun: dryRun, Force: force}
+			opts := install.Options{Scope: render.Scope(scopeName), Mode: install.Mode(modeName), DryRun: dryRun, Force: force, AllowExecutable: allowExecutable}
 			if profileName != "" {
 				if len(args) > 0 {
 					return exitcodes.Wrap(fmt.Errorf("skill-dir is not used with --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "install profile")
@@ -537,6 +540,9 @@ func newInstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// The manifest may opt a skill into preserving executables
+			// ([skill] allow_executable = true in symskills.toml).
+			opts.AllowExecutable = opts.AllowExecutable || bundle.Manifest.Skill.AllowExecutable
 			rendered, errs := render.RenderAll(bundle, out, []render.Target{target})
 			if len(rendered) == 0 {
 				if len(errs) > 0 {
@@ -555,6 +561,9 @@ func newInstallCmd() *cobra.Command {
 			if result.BackupPath != "" {
 				fmt.Fprintf(cmd.OutOrStdout(), "previous unmanaged skill moved to %s\n", result.BackupPath)
 			}
+			for _, change := range result.ModeChanges {
+				fmt.Fprintf(cmd.OutOrStdout(), "stripped executable bit from %s (%s -> %s; use --allow-executable to preserve)\n", change.Path, change.From, change.To)
+			}
 			return nil
 		},
 	}
@@ -565,6 +574,7 @@ func newInstallCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Render output directory")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Plan install without writing")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
+	cmd.Flags().BoolVar(&allowExecutable, "allow-executable", false, "Preserve executable bits on resource files instead of stripping them")
 	cmd.Flags().StringVar(&profileName, "profile", "", "Install all skills from a context profile")
 	return cmd
 }
