@@ -1480,7 +1480,7 @@ nonexistent = { skill = "nonexistent-skill" }
 
 func writeTestSkill(t *testing.T, dir, name, description string) {
 	t.Helper()
-	data := "---\nname: " + name + "\ndescription: " + description + "\n---\n\n# Body\n"
+	data := "---\nname: " + name + "\ndescription: " + description + "\ncategory: Testing\n---\n\n# Body\n"
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}

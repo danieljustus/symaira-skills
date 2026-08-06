@@ -1,0 +1,63 @@
+name: Bug report
+description: Report a reproducible problem with symskills
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest command sequence and input needed to reproduce the issue.
+      placeholder: |
+        1. Run `symskills ...`
+        2. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include relevant command output and error messages. Remove secrets first.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: symskills version
+      placeholder: "git describe --tags or the version printed by the binary"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+    validations:
+      required: true
+  - type: input
+    id: harness
+    attributes:
+      label: Harness and version
+      placeholder: "OpenCode, Claude Code, Codex, or Hermes"
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Links, configuration details, or screenshots that may help.

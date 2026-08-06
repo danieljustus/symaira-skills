@@ -219,6 +219,10 @@ func TestSkillsRestoreDryRunByDefault(t *testing.T) {
 	if result["dry_run"] != true {
 		t.Errorf("expected dry_run true by default, got %#v", result["dry_run"])
 	}
+	notes, ok := result["notes"].([]any)
+	if !ok || len(notes) < 2 {
+		t.Fatalf("expected restore guidance notes, got %#v", result["notes"])
+	}
 	if _, ok := result["commit"]; ok {
 		t.Error("dry-run must not report a commit")
 	}

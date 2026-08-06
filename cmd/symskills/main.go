@@ -275,6 +275,7 @@ and versioning is simply reported unavailable.`,
 type listItem struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Category    string `json:"category,omitempty"`
 	Path        string `json:"path"`
 	metadata.Record
 }
@@ -310,13 +311,18 @@ func newListCmd() *cobra.Command {
 				InstallOpt: install.Options{HomeDir: userHomeDir(), Scope: render.ScopeUser},
 			}
 			items := make([]listItem, 0, len(bundles))
+			categoryCounts := map[string]int{}
 			for _, b := range bundles {
 				rec := metadata.Collect(b.Root, b.Frontmatter.Name, metaOpts)
-				items = append(items, listItem{Name: b.Frontmatter.Name, Description: b.Frontmatter.Description, Path: b.Root, Record: rec})
+				category := b.Frontmatter.Category
+				if category != "" {
+					categoryCounts[category]++
+				}
+				items = append(items, listItem{Name: b.Frontmatter.Name, Description: b.Frontmatter.Description, Category: category, Path: b.Root, Record: rec})
 			}
 			sortListItems(items, sortBy)
 			if jsonOut {
-				return printJSON(cmd, map[string]any{"skills": items, "issues": issues})
+				return printJSON(cmd, map[string]any{"skills": items, "category_counts": categoryCounts, "issues": issues})
 			}
 			for _, item := range items {
 				fmt.Fprintf(cmd.OutOrStdout(), "%s	%s	%s	%s	%s\n", item.Name, item.Description, shortDate(item.ModifiedAt), shortDate(latestInstallTS(item.Installs)), item.Path)
@@ -543,10 +549,19 @@ func newValidateCmd() *cobra.Command {
 			if issues == nil {
 				issues = []skill.Issue{}
 			}
-			if len(issues) > 0 {
+			hasErrors := false
+			for _, issue := range issues {
+				if issue.Severity == "error" {
+					hasErrors = true
+					break
+				}
+			}
+			if hasErrors {
 				messages := make([]string, 0, len(issues))
 				for _, issue := range issues {
-					messages = append(messages, issue.Message)
+					if issue.Severity == "error" {
+						messages = append(messages, issue.Message)
+					}
 				}
 				newEventLogger().Record(events.Event{
 					Event:   events.EventValidateFailure,
@@ -557,11 +572,11 @@ func newValidateCmd() *cobra.Command {
 					Actor:   events.ActorCLI,
 				})
 			}
-			result := map[string]any{"valid": len(issues) == 0, "issues": issues, "resources": bundle.Resources}
+			result := map[string]any{"valid": !hasErrors, "issues": issues, "resources": bundle.Resources}
 			if jsonOut {
 				return printJSON(cmd, result)
 			}
-			if len(issues) == 0 {
+			if !hasErrors {
 				fmt.Fprintln(cmd.OutOrStdout(), "valid")
 				return nil
 			}
@@ -1369,11 +1384,18 @@ func newProfileValidateCmd() *cobra.Command {
 				}
 			}
 
-			result := map[string]any{"valid": len(issues) == 0, "issues": issues}
+			hasErrors := false
+			for _, issue := range issues {
+				if issue.Severity == "error" {
+					hasErrors = true
+					break
+				}
+			}
+			result := map[string]any{"valid": !hasErrors, "issues": issues}
 			if jsonOut {
 				return printJSON(cmd, result)
 			}
-			if len(issues) == 0 {
+			if !hasErrors {
 				fmt.Fprintln(cmd.OutOrStdout(), "valid")
 				return nil
 			}

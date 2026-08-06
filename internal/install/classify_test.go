@@ -196,3 +196,26 @@ func TestClassifyEmptyDigestIsAbsence(t *testing.T) {
 		t.Fatalf("all-empty = %s, want unchanged", got)
 	}
 }
+
+func TestSummarizeDriftSharesStatusAndPullOutcomes(t *testing.T) {
+	outcome := SummarizeDrift([]FileDrift{
+		{Path: "library.txt", Kind: DriftLibraryChanged},
+		{Path: "harness.txt", Kind: DriftHarnessChanged},
+		{Path: "converged.txt", Kind: DriftConverged},
+		{Path: "conflict.txt", Kind: DriftConflict},
+	})
+	if outcome.Status != StatusConflict {
+		t.Fatalf("status = %s, want conflict", outcome.Status)
+	}
+	for _, path := range []string{"harness.txt", "converged.txt"} {
+		if !outcome.Pullable[path] {
+			t.Errorf("%s should be pullable", path)
+		}
+	}
+	if !outcome.Refusable["conflict.txt"] {
+		t.Fatal("conflict.txt should be refusable")
+	}
+	if outcome.Pullable["library.txt"] {
+		t.Error("library-only drift must not be pullable")
+	}
+}

@@ -311,31 +311,20 @@ func classifyStatusInstall(target render.Target, name, installedPath, freshPath 
 		return nil
 	}
 	drifts := ClassifyDrift(base, left, right)
+	outcome := SummarizeDrift(drifts)
 	st := &InstallStatus{
-		Target: target, Name: name, Path: installedPath, Status: StatusInSync,
+		Target: target, Name: name, Path: installedPath, Status: outcome.Status,
 		Mode: marker.Mode, InstalledAt: marker.Installed, SourceHash: marker.SourceHash,
 	}
-	var conflictFiles []string
-	for _, d := range drifts {
-		switch d.Kind {
-		case DriftConflict:
-			st.Status = StatusConflict
-			conflictFiles = append(conflictFiles, d.Path)
-		case DriftHarnessChanged:
-			if st.Status != StatusConflict {
-				st.Status = StatusHarnessChanged
-			}
-		case DriftLibraryChanged:
-			// Library drift alone is the plain push case (#115): stale.
-			if st.Status == StatusInSync {
-				st.Status = StatusStale
-			}
-		}
-	}
-	if st.Status == StatusConflict || st.Status == StatusHarnessChanged {
+	if outcome.Status == StatusConflict || outcome.Status == StatusHarnessChanged {
 		st.Drift = drifts
 	}
-	if st.Status == StatusConflict {
+	if outcome.Status == StatusConflict {
+		conflictFiles := make([]string, 0, len(outcome.Refusable))
+		for path := range outcome.Refusable {
+			conflictFiles = append(conflictFiles, path)
+		}
+		sort.Strings(conflictFiles)
 		st.Error = fmt.Sprintf("conflict in: %s", strings.Join(conflictFiles, ", "))
 	}
 	return st

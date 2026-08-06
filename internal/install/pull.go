@@ -139,13 +139,15 @@ func Pull(opts PullOptions) (PullResult, error) {
 	if err != nil {
 		return result, err
 	}
+	var driftOutcome DriftOutcome
 	if len(base) > 0 {
-		for _, drift := range ClassifyDrift(base, left, right) {
-			if drift.Kind == DriftConflict {
-				result.Refusals = append(result.Refusals, fmt.Sprintf("conflict in %s", drift.Path))
-			}
+		drifts := ClassifyDrift(base, left, right)
+		driftOutcome = SummarizeDrift(drifts)
+		for path := range driftOutcome.Refusable {
+			result.Refusals = append(result.Refusals, fmt.Sprintf("conflict in %s", path))
 		}
 		if len(result.Refusals) > 0 {
+			sort.Strings(result.Refusals)
 			return result, fmt.Errorf("pull refused: %s", strings.Join(result.Refusals, "; "))
 		}
 	}
@@ -173,8 +175,11 @@ func Pull(opts PullOptions) (PullResult, error) {
 		}
 		ld, lok := left[path]
 		rd, rok := right[path]
-		bd, bok := base[path]
-		if len(base) > 0 && ClassifyFile(bd, ld, rd) != DriftHarnessChanged && ClassifyFile(bd, ld, rd) != DriftConverged {
+		bok := false
+		if len(base) > 0 {
+			_, bok = base[path]
+		}
+		if len(base) > 0 && !driftOutcome.Pullable[path] {
 			continue
 		}
 		if !rok {
