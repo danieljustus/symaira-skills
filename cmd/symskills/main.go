@@ -28,6 +28,7 @@ import (
 	"github.com/danieljustus/symaira-skills/internal/profile"
 	"github.com/danieljustus/symaira-skills/internal/render"
 	"github.com/danieljustus/symaira-skills/internal/skill"
+	"github.com/danieljustus/symaira-skills/internal/vcs"
 )
 
 var version = "0.1.9"
@@ -169,6 +170,7 @@ func newImportCmd() *cobra.Command {
 	var library string
 	var jsonOut bool
 	var batch bool
+	var update bool
 	cmd := &cobra.Command{
 		Use:   "import <skill-dir>",
 		Short: "Import an existing skill directory into the symskills library",
@@ -177,7 +179,14 @@ func newImportCmd() *cobra.Command {
 Without --batch: imports a single skill directory containing SKILL.md.
 With --batch: scans the given directory for immediate subdirectories
 containing SKILL.md and imports each one. If the directory itself is a
-skill, it falls back to single-skill import.`,
+skill, it falls back to single-skill import.
+
+Every imported skill is versioned in its own git repository (see the
+"Per-skill versioning" section of the README): a fresh import ends with
+exactly one commit, and re-importing with --update records the change as
+a new commit instead of refusing. Set vcs.enabled = false in the config
+to disable versioning; when git is missing every operation still succeeds
+and versioning is simply reported unavailable.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
@@ -188,9 +197,14 @@ skill, it falls back to single-skill import.`,
 			if lib == "" {
 				lib = cfg.LibraryDir
 			}
+			// Degradation is reported once per command, not per skill.
+			if cfg.VCSEnabled() && !vcs.Available() {
+				fmt.Fprintln(cmd.ErrOrStderr(), "warning: git not found on PATH; per-skill versioning is disabled for this operation")
+			}
+			opts := skill.ImportOptions{VCSEnabled: cfg.VCSEnabled(), Update: update}
 
 			if batch {
-				results := skill.ImportSkills(args[0], lib)
+				results := skill.ImportSkillsOpts(args[0], lib, opts)
 				logger := newEventLogger()
 				for _, r := range results {
 					switch r.Status {
@@ -208,6 +222,9 @@ skill, it falls back to single-skill import.`,
 					switch r.Status {
 					case skill.BatchImported:
 						fmt.Fprintf(cmd.OutOrStdout(), "Imported %s to %s\n", r.Name, r.Path)
+						if r.VCSWarning != "" {
+							fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", r.VCSWarning)
+						}
 						imported++
 					case skill.BatchSkipped:
 						fmt.Fprintf(cmd.OutOrStdout(), "Skipped %s: %s\n", r.Name, r.Error)
@@ -221,7 +238,7 @@ skill, it falls back to single-skill import.`,
 				return nil
 			}
 
-			result, err := skill.ImportSkill(args[0], lib)
+			result, err := skill.ImportSkillOpts(args[0], lib, opts)
 			logger := newEventLogger()
 			if err != nil {
 				name := filepath.Base(args[0])
@@ -236,12 +253,16 @@ skill, it falls back to single-skill import.`,
 				return printJSON(cmd, result)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Imported %s to %s\n", result.Name, result.Path)
+			if result.VCSWarning != "" {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", result.VCSWarning)
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&library, "library", "", "Library directory")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	cmd.Flags().BoolVar(&batch, "batch", false, "Batch-import all skills from subdirectories")
+	cmd.Flags().BoolVar(&update, "update", false, "Re-import over an existing library skill, recording a new versioned commit")
 	return cmd
 }
 
@@ -1215,7 +1236,7 @@ func newDoctorCmd() *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
-		Short: "Report symskills paths and target install locations",
+		Short: "Report symskills paths, target install locations and versioning status",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -1233,6 +1254,23 @@ func newDoctorCmd() *cobra.Command {
 				}
 				paths = append(paths, targetPath{Target: target, User: dir})
 			}
+			// Per-skill versioning status (#118): one independent git
+			// repository per library skill, initialized on import.
+			type vcsSkill struct {
+				Name   string `json:"name"`
+				Status string `json:"status"` // versioned | unversioned
+			}
+			vcsSkills := []vcsSkill{}
+			if bundles, _ := skill.ListLibrary(cfg.LibraryDir); bundles != nil {
+				for _, b := range bundles {
+					status := "unversioned"
+					if vcs.IsRepo(b.Root) {
+						status = "versioned"
+					}
+					vcsSkills = append(vcsSkills, vcsSkill{Name: b.Frontmatter.Name, Status: status})
+				}
+			}
+			gitAvailable := vcs.Available()
 			result := map[string]any{
 				"config_path":  config.ConfigPath(),
 				"config":       cfg,
@@ -1240,6 +1278,11 @@ func newDoctorCmd() *cobra.Command {
 				"profiles_dir": cfg.ProfilesDir,
 				"project_dir":  ".",
 				"log_path":     events.DefaultPath(),
+				"vcs": map[string]any{
+					"enabled":       cfg.VCSEnabled(),
+					"git_available": gitAvailable,
+					"skills":        vcsSkills,
+				},
 			}
 			if jsonOut {
 				return printJSON(cmd, result)
@@ -1247,6 +1290,18 @@ func newDoctorCmd() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "config: %s\nlibrary: %s\nrendered: %s\nprofiles: %s\nlog: %s\n", config.ConfigPath(), cfg.LibraryDir, cfg.RenderDir, cfg.ProfilesDir, events.DefaultPath())
 			for _, p := range paths {
 				fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", p.Target, p.User)
+			}
+			versioning := "disabled"
+			if cfg.VCSEnabled() {
+				versioning = "enabled"
+			}
+			gitState := "missing"
+			if gitAvailable {
+				gitState = "available"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "versioning: %s (git %s)\n", versioning, gitState)
+			for _, s := range vcsSkills {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s	%s\n", s.Status, s.Name)
 			}
 			return nil
 		},

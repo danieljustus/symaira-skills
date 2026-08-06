@@ -175,7 +175,7 @@ alias = "review" # optional target-specific alias
 | Command | Purpose |
 |---------|---------|
 | `init` | Create XDG config and data directories |
-| `import <skill-dir>` | Copy an existing skill into the managed library |
+| `import <skill-dir>` | Copy an existing skill into the managed library (use `--update` to re-import over an existing skill; `--batch` imports a whole directory) |
 | `list` | List managed skills (with per-skill metadata; `--sort=name\|changed\|installed\|used`) |
 | `inspect <skill-dir>` | Show parsed SKILL.md + symskills metadata |
 | `validate <skill-dir>` | Validate portable skill metadata and references |
@@ -188,8 +188,58 @@ alias = "review" # optional target-specific alias
 | `profile validate <profile-name>` | Validate a profile's structure and link targets |
 | `targets` | Read-only inventory and readiness status for AI-agent harnesses |
 | `discover [paths...]` | Discover unmanaged skill sources in harness roots or explicit paths |
-| `doctor` | Print config, library, render, and target paths |
+| `doctor` | Print config, library, render, and target paths plus per-skill versioning status |
 | `serve --stdio` | Serve MCP tools over stdio |
+
+## Per-Skill Versioning
+
+Every skill in the managed library owns an **independent git repository**
+(`~/.local/share/symskills/library/<name>/.git`), initialized automatically
+on import. One repo per skill — never one repo for the whole library — so a
+skill can be inspected, reverted, exported or shared without dragging along
+unrelated skills. The repositories are local-only: no remote is ever
+configured, pushed to or fetched from.
+
+How it works:
+
+- **Import**: `symskills import <dir>` copies the skill and leaves a
+  repository with exactly one commit containing the full skill.
+- **Update**: `symskills import --update <dir>` re-imports over an existing
+  library skill (its `.git` survives the swap) and records the change as a
+  new commit. Importing over an existing skill without `--update` still
+  refuses, as before.
+- **Every write is committed**: any change symskills itself performs on a
+  library skill is committed with a message naming the operation, e.g.
+  `update: skill demo from /path/to/demo`. Read-only operations (`list`,
+  `inspect`, `validate`, `render`, `diff`) never commit.
+- **Commits only after success**: the commit happens after the write
+  completed, so history never shows a state that was never on disk.
+- **User commits are preserved**: symskills never uses `--force`, never
+  resets and never rewrites history — automatic commits are always added on
+  top of HEAD. A hand-made commit inside a skill repo survives the next
+  write unchanged.
+- **`doctor`** reports the versioning status per skill (`versioned` /
+  `unversioned`) plus whether the toggle is on and git is available.
+
+Opting out and degradation:
+
+- Set `vcs.enabled = false` in `~/.config/symskills/config.toml` (or
+  `.symskills.toml`) to disable all repository writes. Versioning is on by
+  default.
+- When the `git` binary is missing, every operation still succeeds;
+  versioning is simply reported unavailable — once per command, not per
+  skill.
+
+Bundles stay clean: `.git` is excluded from render, install and diff, so a
+versioned skill never leaks repository internals into a harness.
+
+Note on disk usage: a per-skill repository stores a full copy of every
+changed file. Skills with large `assets/` directories grow accordingly; if
+that matters, opt out with `vcs.enabled = false`.
+
+The commit history is a usable undo surface — see
+[History, Show and Restore](#history-show-and-restore) for the CLI and MCP
+commands that read and roll back revisions.
 
 ## Install Safety
 

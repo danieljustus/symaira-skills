@@ -24,6 +24,22 @@ type Config struct {
 	// cannot decode slices of structs, so targets are loaded separately by
 	// LoadTargets with a dedicated TOML decode.
 	Targets []CustomTarget `toml:"targets"`
+	// VCS configures per-skill git versioning of the library (#118).
+	// Versioning is on by default; set vcs.enabled = false to opt out.
+	VCS VCSConfig `json:"vcs" toml:"vcs"`
+}
+
+// VCSConfig controls per-skill git versioning. Enabled is a pointer so
+// configkit's non-zero merge distinguishes "unset" (default on) from an
+// explicit false, which is the zero value for bool.
+type VCSConfig struct {
+	Enabled *bool `json:"enabled" toml:"enabled"`
+}
+
+// VCSEnabled reports whether per-skill git versioning is on. The default
+// is true; only an explicit vcs.enabled = false turns it off.
+func (c *Config) VCSEnabled() bool {
+	return c.VCS.Enabled == nil || *c.VCS.Enabled
 }
 
 // targetsFile is the minimal TOML shape used to decode the optional
@@ -98,8 +114,11 @@ func Defaults() *Config {
 		CacheDir:    filepath.Join(home, ".cache", "symskills"),
 		ProfilesDir: filepath.Join(home, ".config", "symskills", "profiles"),
 		BaseDir:     filepath.Join(home, ".local", "share", "symskills", "base"),
+		VCS:         VCSConfig{Enabled: boolPtr(true)},
 	}
 }
+
+func boolPtr(v bool) *bool { return &v }
 
 func ConfigPath() string {
 	home, err := os.UserHomeDir()
