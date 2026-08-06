@@ -464,12 +464,21 @@ func TestDiffCommand(t *testing.T) {
 	var resp []struct {
 		Path   string `json:"path"`
 		Status string `json:"status"`
+		Diff   string `json:"diff"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
 		t.Fatalf("parse JSON: %v", err)
 	}
 	if len(resp) == 0 || resp[0].Status != "modified" {
 		t.Errorf("unexpected JSON resp: %+v", resp)
+	}
+	// #110: the JSON output must include the actual content difference so
+	// callers (including the macOS client) can act on the change.
+	if !strings.Contains(resp[0].Diff, "Modified description") || !strings.Contains(resp[0].Diff, "For testing diff") {
+		t.Errorf("expected content diff in JSON output, got diff=%q", resp[0].Diff)
+	}
+	if !strings.Contains(resp[0].Diff, "--- a/SKILL.md") {
+		t.Errorf("expected unified file header naming the changed path, got diff=%q", resp[0].Diff)
 	}
 
 	// Diff with invalid target

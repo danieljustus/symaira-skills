@@ -3,6 +3,7 @@ package install
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/danieljustus/symaira-skills/internal/render"
@@ -272,6 +273,64 @@ func TestDiffReportsChangedFiles(t *testing.T) {
 	}
 	if len(changes) != 1 || changes[0].Path != "SKILL.md" || changes[0].Status != "modified" {
 		t.Fatalf("unexpected changes: %#v", changes)
+	}
+}
+
+func TestDiffIncludesContentDiff(t *testing.T) {
+	// #110: a modified file must carry a unified-style content diff
+	// (left = freshly rendered, right = installed copy) so the CLI/JSON
+	// output and the GUI dialog can show what actually changed.
+	rendered := t.TempDir()
+	installed := t.TempDir()
+	writeFile(t, filepath.Join(rendered, "SKILL.md"), "line one\nline two\nline three\n")
+	writeFile(t, filepath.Join(installed, "SKILL.md"), "line one\nline two changed\nline three\n")
+
+	changes, err := Diff(rendered, installed, Options{})
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	if len(changes) != 1 || changes[0].Path != "SKILL.md" || changes[0].Status != "modified" {
+		t.Fatalf("unexpected changes: %#v", changes)
+	}
+	diff := changes[0].Diff
+	if !strings.Contains(diff, "-line two\n") {
+		t.Errorf("expected rendered-only line prefixed with '-', got:\n%s", diff)
+	}
+	if !strings.Contains(diff, "+line two changed\n") {
+		t.Errorf("expected installed-only line prefixed with '+', got:\n%s", diff)
+	}
+	if !strings.Contains(diff, " ") || !strings.Contains(diff, "line one") {
+		t.Errorf("expected unchanged context lines in diff, got:\n%s", diff)
+	}
+	if !strings.Contains(diff, "@@ ") {
+		t.Errorf("expected unified hunk header in diff, got:\n%s", diff)
+	}
+	if !strings.Contains(diff, "SKILL.md") {
+		t.Errorf("expected file header naming the changed path in diff, got:\n%s", diff)
+	}
+}
+
+func TestDiffSkipsContentForBinaryAndStatusOnlyChanges(t *testing.T) {
+	// #110: content diffs are best-effort enrichment. Binary files and
+	// added/removed files keep the status-only shape (empty Diff).
+	rendered := t.TempDir()
+	installed := t.TempDir()
+	writeFile(t, filepath.Join(rendered, "asset.bin"), "abc\x00def")
+	writeFile(t, filepath.Join(installed, "asset.bin"), "abc\x00ghi")
+	writeFile(t, filepath.Join(rendered, "added.txt"), "new file\n")
+	writeFile(t, filepath.Join(installed, "removed.txt"), "old file\n")
+
+	changes, err := Diff(rendered, installed, Options{})
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	for _, c := range changes {
+		if c.Diff != "" {
+			t.Errorf("change %s (%s) must not carry a content diff, got:\n%s", c.Path, c.Status, c.Diff)
+		}
+	}
+	if len(changes) != 3 {
+		t.Fatalf("expected modified+added+removed changes, got %#v", changes)
 	}
 }
 
