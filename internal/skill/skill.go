@@ -18,6 +18,15 @@ import (
 
 var skillNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
+// Size limits for portable skill bundles, fixed as a contract following the
+// agentskills specification rather than tuned per install.
+const (
+	// MaxDescriptionLength caps the frontmatter description in characters.
+	MaxDescriptionLength = 1024
+	// MaxBodyLength caps the SKILL.md markdown body in characters.
+	MaxBodyLength = 50000
+)
+
 // Frontmatter is the portable SKILL.md metadata symskills understands.
 type Frontmatter struct {
 	Name                         string         `yaml:"name" json:"name"`
@@ -295,9 +304,13 @@ func Validate(bundle *Bundle) []Issue {
 	}
 	if strings.TrimSpace(bundle.Frontmatter.Description) == "" {
 		issues = append(issues, Issue{Code: "description_required", Severity: "error", Message: "frontmatter description is required", Path: "SKILL.md"})
+	} else if len(bundle.Frontmatter.Description) > MaxDescriptionLength {
+		issues = append(issues, Issue{Code: "description_too_long", Severity: "error", Message: fmt.Sprintf("frontmatter description exceeds maximum length of %d characters (actual: %d)", MaxDescriptionLength, len(bundle.Frontmatter.Description)), Path: "SKILL.md"})
 	}
 	if strings.TrimSpace(bundle.Body) == "" {
 		issues = append(issues, Issue{Code: "body_required", Severity: "error", Message: "SKILL.md body is empty", Path: "SKILL.md"})
+	} else if len(bundle.Body) > MaxBodyLength {
+		issues = append(issues, Issue{Code: "body_too_long", Severity: "warning", Message: fmt.Sprintf("SKILL.md body exceeds maximum length of %d characters (actual: %d)", MaxBodyLength, len(bundle.Body)), Path: "SKILL.md"})
 	}
 	for target, cfg := range bundle.Manifest.Targets {
 		if !cfg.Enabled {

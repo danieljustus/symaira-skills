@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,6 +103,64 @@ func TestValidateSkillNameAcceptsValidAndRejectsInvalidNames(t *testing.T) {
 			t.Fatalf("expected %q to be invalid", name)
 		}
 	}
+}
+
+func TestValidateDescriptionAndBodyLengthLimits(t *testing.T) {
+	// The bundle directory must match the frontmatter name so no
+	// name_dir_mismatch issue disturbs the length assertions.
+	dir := filepath.Join(t.TempDir(), "long-skill")
+	desc := strings.Repeat("d", MaxDescriptionLength+1)
+	body := strings.Repeat("b", MaxBodyLength+1)
+	// No trailing newline: the parsed body must equal the content exactly.
+	writeFile(t, filepath.Join(dir, "SKILL.md"), fmt.Sprintf("---\nname: long-skill\ndescription: %s\n---\n\n%s", desc, body))
+
+	bundle, err := LoadBundle(dir)
+	if err != nil {
+		t.Fatalf("LoadBundle: %v", err)
+	}
+	issues := Validate(bundle)
+
+	descIssue := issueByCode(issues, "description_too_long")
+	if descIssue == nil {
+		t.Fatalf("expected description_too_long issue, got %#v", issues)
+	}
+	if descIssue.Severity != "error" {
+		t.Errorf("description_too_long severity: want error, got %q", descIssue.Severity)
+	}
+	if !strings.Contains(descIssue.Message, "1024") || !strings.Contains(descIssue.Message, fmt.Sprint(MaxDescriptionLength+1)) {
+		t.Errorf("description_too_long message should name actual and permitted length, got %q", descIssue.Message)
+	}
+
+	bodyIssue := issueByCode(issues, "body_too_long")
+	if bodyIssue == nil {
+		t.Fatalf("expected body_too_long issue, got %#v", issues)
+	}
+	if bodyIssue.Severity != "warning" {
+		t.Errorf("body_too_long severity: want warning, got %q", bodyIssue.Severity)
+	}
+	if !strings.Contains(bodyIssue.Message, "50000") || !strings.Contains(bodyIssue.Message, fmt.Sprint(MaxBodyLength+1)) {
+		t.Errorf("body_too_long message should name actual and permitted length, got %q", bodyIssue.Message)
+	}
+
+	// A bundle exactly at the limits stays clean.
+	okDir := filepath.Join(t.TempDir(), "limit-skill")
+	writeFile(t, filepath.Join(okDir, "SKILL.md"), fmt.Sprintf("---\nname: limit-skill\ndescription: %s\n---\n\n%s", strings.Repeat("d", MaxDescriptionLength), strings.Repeat("b", MaxBodyLength)))
+	okBundle, err := LoadBundle(okDir)
+	if err != nil {
+		t.Fatalf("LoadBundle: %v", err)
+	}
+	if HasIssue(Validate(okBundle), "description_too_long") || HasIssue(Validate(okBundle), "body_too_long") {
+		t.Fatalf("bundle at the length limits should validate clean, got %#v", Validate(okBundle))
+	}
+}
+
+func issueByCode(issues []Issue, code string) *Issue {
+	for i := range issues {
+		if issues[i].Code == code {
+			return &issues[i]
+		}
+	}
+	return nil
 }
 
 func TestImportSkillCopiesExistingSkillIntoLibrary(t *testing.T) {
