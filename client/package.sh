@@ -22,7 +22,7 @@ fi
 
 echo "=== 1. Building Go symskills Binary ==="
 cd ..
-CGO_ENABLED=0 go build -ldflags "-s -w" -o symskills cmd/symskills/main.go
+CGO_ENABLED=0 go build -ldflags "-s -w" -o symskills ./cmd/symskills
 
 if [ -n "$CODESIGN_IDENTITY" ]; then
     echo "Signing Go binary with identity: $CODESIGN_IDENTITY"
