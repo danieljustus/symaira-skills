@@ -3,7 +3,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/danieljustus/symaira-skills/ci.yml)](https://github.com/danieljustus/symaira-skills/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/danieljustus/symaira-skills)](https://github.com/danieljustus/symaira-skills/releases)
 
-`symskills` is a local-first SSOT manager for Agent Skills. It lets users keep one portable skill source and render/install harness-specific variants for OpenCode, Claude Code, Codex, and Hermes.
+`symskills` is a local-first SSOT manager for Agent Skills. It lets users keep one portable skill source and render/install harness-specific variants for OpenCode, Claude Code, Codex, Hermes, Antigravity, and OpenClaw — plus user-defined targets via config.
 
 The repository ships empty. It contains the tool, schema conventions, and test fixtures only. Users bring their own skill repositories.
 
@@ -11,7 +11,7 @@ The repository ships empty. It contains the tool, schema conventions, and test f
 
 See [docs/porting-to-a-new-harness.md](docs/porting-to-a-new-harness.md) for the complete checklist and code touchpoints required to add support for a new AI-agent harness.
 
-Currently supported targets: OpenCode, Claude Code, Codex, and Hermes.
+Currently supported targets: OpenCode, Claude Code, Codex, Hermes, Antigravity, OpenClaw, and user-defined targets (see [docs/porting-to-a-new-harness.md](docs/porting-to-a-new-harness.md) for the custom-target checklist).
 
 ## Why
 
