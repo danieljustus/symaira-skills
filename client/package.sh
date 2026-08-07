@@ -75,23 +75,12 @@ else
 fi
 
 echo "=== 6. Packaging into DMG ==="
-DMG_STAGE="build/dmg_stage"
-rm -rf "$DMG_STAGE"
-mkdir -p "$DMG_STAGE"
-
-echo "Copying App to staging..."
-cp -R "$APP_BUNDLE" "$DMG_STAGE/"
-
-echo "Creating Applications symlink..."
-ln -s /Applications "$DMG_STAGE/Applications"
-
-echo "Creating DMG..."
+echo "Creating branded DMG with drag-to-Applications window..."
 rm -f build/Symskills.dmg
-hdiutil create -volname "Symskills" \
-               -srcfolder "$DMG_STAGE" \
-               -ov \
-               -format UDZO \
-               build/Symskills.dmg
+"${SCRIPT_DIR:-.}/../scripts/create-symaira-dmg.sh" \
+    "$APP_BUNDLE" \
+    build/Symskills.dmg \
+    "Symskills"
 
 echo "=== Packaging Complete! ==="
 echo "DMG created successfully: client/build/Symskills.dmg"
