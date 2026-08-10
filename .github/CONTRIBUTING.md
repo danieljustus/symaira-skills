@@ -21,6 +21,7 @@ All tests and lint must pass before a pull request is merged.
 - Use a descriptive title and summarize the change and the tests you ran in the description.
 - Add screenshots for any UI changes (the `client/` app).
 - Do not commit generated artifacts or build output.
+- Pull requests are merged with a **squash merge**: the PR lands on `main` as one commit with the PR title. Merge commits and rebase merges are disabled in the repository settings, and `main` enforces linear history, so every commit on `main` is the squashed result of one reviewed PR.
 
 ## Commit messages
 
