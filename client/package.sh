@@ -12,6 +12,14 @@ elif [ -d "/Applications/Xcode.app" ]; then
 fi
 echo "Using DEVELOPER_DIR=${DEVELOPER_DIR:-default}"
 
+# App marketing version: the release tag is the single source of truth
+# (see docs/versioning.md). CI passes APP_VERSION from the tag; local
+# builds fall back to the nearest git tag.
+if [ -z "${APP_VERSION:-}" ]; then
+    APP_VERSION="$(git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || true)"
+fi
+echo "=== App marketing version: ${APP_VERSION:-<project default>} ==="
+
 # Optional code signing identity (set by CI for signed releases)
 CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
 if [ -n "$CODESIGN_IDENTITY" ]; then
@@ -53,6 +61,9 @@ XCODEBUILD_FLAGS=(
     CODE_SIGN_IDENTITY="-"
     CODE_SIGN_STYLE="Manual"
 )
+if [ -n "${APP_VERSION:-}" ]; then
+    XCODEBUILD_FLAGS+=(MARKETING_VERSION="$APP_VERSION")
+fi
 xcodebuild "${XCODEBUILD_FLAGS[@]}"
 
 echo "=== 5. Signing App Bundle ==="
@@ -61,6 +72,18 @@ APP_BUNDLE="build/Symskills.xcarchive/Products/Applications/Symskills.app"
 if [ ! -d "$APP_BUNDLE" ]; then
     echo "ERROR: Application build failed, could not find $APP_BUNDLE"
     exit 1
+fi
+
+echo "=== 5a. Verifying App Marketing Version ==="
+BUILT_VERSION="$(defaults read "$APP_BUNDLE/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || true)"
+echo "Built app version: ${BUILT_VERSION:-unknown}"
+if [ -n "${APP_VERSION:-}" ]; then
+    if [ "$BUILT_VERSION" != "$APP_VERSION" ]; then
+        echo "ERROR: Built app version '$BUILT_VERSION' does not match release version '$APP_VERSION'." >&2
+        echo "Fix the version derivation (see docs/versioning.md) before publishing." >&2
+        exit 1
+    fi
+    echo "App version matches: $APP_VERSION"
 fi
 
 if [ -n "$CODESIGN_IDENTITY" ]; then
