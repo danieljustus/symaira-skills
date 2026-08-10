@@ -383,6 +383,9 @@ make lint
 make build
 ```
 
+Release history and the update convention for user-visible changes live in
+[CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
 Apache-2.0 - Daniel Justus
