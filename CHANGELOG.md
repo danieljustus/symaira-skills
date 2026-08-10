@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<!-- Add user-visible changes here during development. -->
+
+## [v0.3.1] - 2026-08-10
+
 ### Added
 
 - Versioning policy for CLI releases and the macOS app; the macOS app
@@ -215,7 +219,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release.
 
-[Unreleased]: https://github.com/danieljustus/symaira-skills/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/danieljustus/symaira-skills/compare/v0.3.1...HEAD
+[v0.3.1]: https://github.com/danieljustus/symaira-skills/compare/v0.3.0...v0.3.1
 [v0.3.0]: https://github.com/danieljustus/symaira-skills/compare/v0.2.0...v0.3.0
 [v0.2.0]: https://github.com/danieljustus/symaira-skills/compare/v0.1.10...v0.2.0
 [v0.1.10]: https://github.com/danieljustus/symaira-skills/compare/v0.1.9...v0.1.10
