@@ -4,6 +4,7 @@ bin/
 dist/
 coverage.out
 *.test
+.github/audit/
 .github/coverage/
 .github/prerelease/
 .github/review/
