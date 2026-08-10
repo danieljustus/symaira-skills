@@ -7,6 +7,10 @@
 
 The repository ships empty. It contains the tool, schema conventions, and test fixtures only. Users bring their own skill repositories.
 
+![Portable skill workflow: one canonical skill source is validated once, rendered per harness target, and installed into each harness's skill directory.](assets/symskills-workflow.svg)
+
+*The `symskills` workflow: one portable skill source flows through validation, per-target rendering, and harness-specific installation — a single edit lands everywhere without drift.*
+
 ## Porting to a New Harness
 
 See [docs/porting-to-a-new-harness.md](docs/porting-to-a-new-harness.md) for the complete checklist and code touchpoints required to add support for a new AI-agent harness.
