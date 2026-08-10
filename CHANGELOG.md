@@ -13,8 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Group entries as `Added`, `Changed`, `Fixed`, `Removed`, `Security`,
   `Performance`, `Tests`, or `CI and project maintenance`.
 - Reference the PR or issue number where helpful.
-- Release automation moves the `[Unreleased]` section into a dated
-  `## [vX.Y.Z]` section and adds the GitHub comparison link.
+- During release preparation, move the `[Unreleased]` entries into a dated
+  `## [vX.Y.Z]` section and add the corresponding GitHub comparison link.
 
 ## [Unreleased]
 
