@@ -76,7 +76,7 @@ if [ ! -d "$APP_BUNDLE" ]; then
 fi
 
 echo "=== 5a. Verifying App Marketing Version ==="
-BUILT_VERSION="$(defaults read "$APP_BUNDLE/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || true)"
+BUILT_VERSION="$(plutil -extract CFBundleShortVersionString raw -o - "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true)"
 echo "Built app version: ${BUILT_VERSION:-unknown}"
 if [ -n "${APP_VERSION:-}" ]; then
     if [ "$BUILT_VERSION" != "$APP_VERSION" ]; then
