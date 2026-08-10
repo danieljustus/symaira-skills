@@ -24,8 +24,9 @@ macOS app.
   `CFBundleShortVersionString` matches the tag version. A mismatch fails the
   build before the DMG can be published.
   - `client/project.yml` holds only the dev default (`MARKETING_VERSION`),
-  kept aligned with the latest release; it is used for local builds that do
-  not run through the release path.
+    kept aligned with the latest release; it is used for local builds that
+    do not run through the release path. Local packaging overrides it only
+    on an exact release tag.
 
 ## Version scheme
 

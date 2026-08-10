@@ -13,10 +13,11 @@ fi
 echo "Using DEVELOPER_DIR=${DEVELOPER_DIR:-default}"
 
 # App marketing version: the release tag is the single source of truth
-# (see docs/versioning.md). CI passes APP_VERSION from the tag; local
-# builds fall back to the nearest git tag.
+# (see docs/versioning.md). CI passes APP_VERSION from the tag. Local
+# builds override the project default only when checked out at an exact
+# release tag; feature-branch descriptions are not valid app versions.
 if [ -z "${APP_VERSION:-}" ]; then
-    APP_VERSION="$(git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || true)"
+    APP_VERSION="$(git describe --tags --exact-match 2>/dev/null | sed 's/^v//' || true)"
 fi
 echo "=== App marketing version: ${APP_VERSION:-<project default>} ==="
 
