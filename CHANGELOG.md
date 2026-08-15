@@ -20,6 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- Add user-visible changes here during development. -->
 
+## [v0.3.2] - 2026-08-15
+
+### Changed
+
+- Update `symaira-corekit` to v0.9.1, pulling in fixes for concurrent
+  config reload, cosign signature verification and JSON-RPC notification
+  handling (#198).
+
+### CI and project maintenance
+
+- Pin `codeql-action` to v4.37.6 (#204) and
+  `actions/attest-build-provenance` to v4.2.2 (#201).
+
 ## [v0.3.1] - 2026-08-10
 
 ### Added
@@ -219,7 +232,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release.
 
-[Unreleased]: https://github.com/danieljustus/symaira-skills/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/danieljustus/symaira-skills/compare/v0.3.2...HEAD
+[v0.3.2]: https://github.com/danieljustus/symaira-skills/compare/v0.3.1...v0.3.2
 [v0.3.1]: https://github.com/danieljustus/symaira-skills/compare/v0.3.0...v0.3.1
 [v0.3.0]: https://github.com/danieljustus/symaira-skills/compare/v0.2.0...v0.3.0
 [v0.2.0]: https://github.com/danieljustus/symaira-skills/compare/v0.1.10...v0.2.0
