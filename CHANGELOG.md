@@ -119,6 +119,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   relative to the body rather than to the file, pointing several lines above
   the actual text (#208).
 
+### Fixed
+
+- Run every `git` invocation with a pinned `C` locale so skill versioning
+  no longer depends on the user's language settings. Library import failed
+  and `history` errored on a fresh repository whenever git emitted
+  translated messages, because the vcs package matches git's
+  human-readable output in those two places.
+
 ## [v0.3.2] - 2026-08-15
 
 ### Changed
