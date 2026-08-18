@@ -48,6 +48,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   byte-identical, keeps the same `source_hash`, and reports no new
   validation findings.
 
+- Harness capabilities: a skill can declare what it needs from a harness
+  runtime, and a target can declare what it offers, so an unrunnable
+  combination is refused instead of installed (#208).
+  - `[skill] requires = ["subagents"]` in `symskills.toml`. Rendering for a
+    target that declares it lacks a required capability is refused, naming
+    skill, target and capability.
+  - A capability a target has not declared is **unknown**, not absent:
+    symskills does not observe harness runtimes, so an undeclared capability
+    renders with a warning rather than a refusal.
+  - Vocabulary: `subagents`, `background_tasks`, `mcp`, `slash_commands`,
+    `hooks`, `scheduled_tasks`.
+  - `[capabilities.<target>]` in `config.toml` records what a user's own
+    harness builds support; user-defined targets declare theirs inline. The
+    built-in registry is deliberately sparse — only `claude` and `hermes`
+    declare `subagents` — and a misspelled target or capability name is an
+    error rather than a silent no-op.
+  - `symskills targets` reports all three states per harness; `targets --json`
+    and the `skills_targets_status` MCP tool expose `runtime_capabilities`.
+  - `render --ignore-capabilities` and `install --ignore-capabilities` force a
+    refused target. The result declares no `compatibility`, since a forced
+    render cannot assert one the target denies. The flag is refused together
+    with `--profile`.
+  - New `harness_coupling` warning: a body or markdown reference that names a
+    registered harness in text every target renders. Mentions inside a
+    `symskills:only` region or a fenced code block are exempt; a
+    `symskills:block` default is not, since every target without an override
+    receives it.
+  - Contract documented in
+    [docs/harness-capabilities.md](docs/harness-capabilities.md).
+
+### Changed
+
+- Frontmatter metadata namespaced under a harness target name is rendered for
+  that target only; `metadata.hermes` no longer travels into the Claude,
+  Codex, OpenCode, Antigravity and OpenClaw copies (#208). Metadata keys that
+  are not target names are unaffected.
+- `compatibility` in a rendered skill is no longer set unconditionally: a
+  render forced past an unsupported capability declares none. Every other
+  render is unchanged.
+
+### Fixed
+
+- `symskills validate` no longer swallows warnings in text output. A skill
+  with warnings but no errors printed only `valid`, hiding every
+  warning-severity finding (`category_required`, `resource_executable`, and
+  now `harness_coupling`). Warnings are written to stderr so stdout stays
+  exactly `valid` for callers that test it (#208).
+- Validation findings in the `SKILL.md` body reported their line number
+  relative to the body rather than to the file, pointing several lines above
+  the actual text (#208).
+
 ## [v0.3.2] - 2026-08-15
 
 ### Changed

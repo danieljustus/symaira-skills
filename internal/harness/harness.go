@@ -43,9 +43,15 @@ type Status struct {
 	ManagedSkillsCount   int           `json:"managed_skills_count"`
 	UnmanagedSkillsCount int           `json:"unmanaged_skills_count"`
 	InstallState         string        `json:"install_state"`
-	Capabilities         []string      `json:"capabilities"`
-	SetupHint            string        `json:"setup_hint"`
-	VerificationStatus   string        `json:"verification_status"` // "unknown" | "verified" | "not_verified" — see package doc for smoke-test relation
+	// Capabilities lists what symskills can do *toward* this target.
+	Capabilities []string `json:"capabilities"`
+	// RuntimeCapabilities reports what the harness runtime offers a skill,
+	// as capability name -> "supported" | "unsupported" | "unknown". It is
+	// declared data, never probed: unknown means symskills has not been
+	// told, not that the harness lacks the capability.
+	RuntimeCapabilities map[string]string `json:"runtime_capabilities"`
+	SetupHint           string            `json:"setup_hint"`
+	VerificationStatus  string            `json:"verification_status"` // "unknown" | "verified" | "not_verified" — see package doc for smoke-test relation
 }
 
 type Options struct {
@@ -103,12 +109,13 @@ func inspectTarget(desc Descriptor, opts Options) Status {
 	configDir := desc.ConfigDir(opts.HomeDir, opts.ProjectDir, opts.Scope)
 
 	st := Status{
-		Target:             desc.Target,
-		DisplayName:        desc.DisplayName,
-		EffectiveSkillRoot: skillRoot,
-		Capabilities:       capabilities,
-		VerificationStatus: "unknown",
-		Evidence:           "none",
+		Target:              desc.Target,
+		DisplayName:         desc.DisplayName,
+		EffectiveSkillRoot:  skillRoot,
+		Capabilities:        capabilities,
+		RuntimeCapabilities: render.CapabilityStates(desc.Target),
+		VerificationStatus:  "unknown",
+		Evidence:            "none",
 	}
 
 	// 1. Evidence / Installed check

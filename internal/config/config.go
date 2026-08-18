@@ -43,9 +43,11 @@ func (c *Config) VCSEnabled() bool {
 }
 
 // targetsFile is the minimal TOML shape used to decode the optional
-// `[[targets]]` table from the global and project config files.
+// `[[targets]]` and `[capabilities]` tables from the global and project
+// config files.
 type targetsFile struct {
-	Targets []CustomTarget `toml:"targets"`
+	Targets      []CustomTarget             `toml:"targets"`
+	Capabilities map[string]map[string]bool `toml:"capabilities"`
 }
 
 // LoadTargets decodes the `[[targets]]` tables from the global config
@@ -71,6 +73,41 @@ func LoadTargets() ([]CustomTarget, error) {
 	return merged.Targets, nil
 }
 
+// LoadCapabilities decodes the optional `[capabilities.<target>]` tables,
+// which record what a user's own harness builds actually offer a skill:
+//
+//	[capabilities.codex]
+//	subagents = true
+//	mcp = false
+//
+// The built-in registry declares only what is evidenced by a harness's
+// documented skill-facing tooling and leaves the rest unknown, so this is how
+// a user completes the picture for their setup. Precedence mirrors
+// LoadTargets: the project file overrides the global one, per target.
+func LoadCapabilities() (map[string]map[string]bool, error) {
+	var merged targetsFile
+	for _, path := range configSearchPaths() {
+		if err := mergeTargetsFile(&merged, path); err != nil {
+			return nil, err
+		}
+	}
+	return merged.Capabilities, nil
+}
+
+// configSearchPaths returns the global config file followed by the project
+// config file, in the precedence order configkit uses.
+func configSearchPaths() []string {
+	globalPath := filepath.Join(os.Getenv("HOME"), ".config", "symskills", "config.toml")
+	if home, err := os.UserHomeDir(); err == nil && os.Getenv("HOME") == "" {
+		globalPath = filepath.Join(home, ".config", "symskills", "config.toml")
+	}
+	paths := []string{globalPath}
+	if cwd, err := os.Getwd(); err == nil {
+		paths = append(paths, filepath.Join(cwd, ".symskills.toml"))
+	}
+	return paths
+}
+
 func mergeTargetsFile(dst *targetsFile, path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil
@@ -81,6 +118,17 @@ func mergeTargetsFile(dst *targetsFile, path string) error {
 	}
 	if len(file.Targets) > 0 {
 		dst.Targets = append(dst.Targets[:0], file.Targets...)
+	}
+	for target, caps := range file.Capabilities {
+		if dst.Capabilities == nil {
+			dst.Capabilities = map[string]map[string]bool{}
+		}
+		if dst.Capabilities[target] == nil {
+			dst.Capabilities[target] = map[string]bool{}
+		}
+		for name, supported := range caps {
+			dst.Capabilities[target][name] = supported
+		}
 	}
 	return nil
 }
@@ -101,6 +149,9 @@ type CustomTarget struct {
 	MetadataFile     string `json:"metadata_file,omitempty" toml:"metadata_file,omitempty"`
 	MetadataTemplate string `json:"metadata_template,omitempty" toml:"metadata_template,omitempty"`
 	OverlayDir       string `json:"overlay_dir,omitempty" toml:"overlay_dir,omitempty"`
+	// Capabilities declares what this harness runtime offers a skill, as
+	// capability name -> supported. Names absent from the map stay unknown.
+	Capabilities map[string]bool `json:"capabilities,omitempty" toml:"capabilities,omitempty"`
 }
 
 func Defaults() *Config {
