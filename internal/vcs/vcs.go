@@ -43,6 +43,23 @@ func Available() bool {
 	return err == nil
 }
 
+// gitEnv returns the environment every git invocation runs with. Beyond
+// disabling terminal prompts it pins the locale to C: symskills matches
+// git's human-readable messages in a few places (an empty initial commit,
+// a repository without commits), and those strings are translated on a
+// developer machine with a non-English locale. Pinning the locale here
+// keeps behaviour identical everywhere instead of depending on the
+// caller's environment. LANGUAGE is cleared too because gettext consults
+// it ahead of LC_ALL when the locale is not C.
+func gitEnv() []string {
+	return append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"LC_ALL=C",
+		"LANG=C",
+		"LANGUAGE=",
+	)
+}
+
 // runGit runs git in dir with args and returns its combined output. It
 // returns ErrUnavailable when git is missing; any non-zero exit becomes
 // an error that carries the command output for diagnostics.
@@ -53,7 +70,7 @@ func runGit(dir string, args ...string) (string, error) {
 	}
 	cmd := exec.Command(path, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = gitEnv()
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -303,7 +320,7 @@ func ExtractRev(dir, rev, dst string) error {
 	}
 	cmd := exec.Command(path, "archive", "--format=tar", rev)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = gitEnv()
 	var buf, errBuf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &errBuf
