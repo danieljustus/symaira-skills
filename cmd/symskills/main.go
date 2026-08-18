@@ -286,12 +286,18 @@ type listItem struct {
 	Category    string `json:"category,omitempty"`
 	Path        string `json:"path"`
 	metadata.Record
+	// Variants and MaxDivergence are populated only by --variants, which
+	// loads every bundle in full and renders it once per target. The
+	// default listing stays on the frontmatter-only fast path.
+	Variants      []render.VariantSummary `json:"variants,omitempty"`
+	MaxDivergence *float64                `json:"max_divergence,omitempty"`
 }
 
 func newListCmd() *cobra.Command {
 	var library string
 	var jsonOut bool
 	var strict bool
+	var variants bool
 	var sortBy string
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -326,14 +332,33 @@ func newListCmd() *cobra.Command {
 				if category != "" {
 					categoryCounts[category]++
 				}
-				items = append(items, listItem{Name: b.Frontmatter.Name, Description: b.Frontmatter.Description, Category: category, Path: b.Root, Record: rec})
+				item := listItem{Name: b.Frontmatter.Name, Description: b.Frontmatter.Description, Category: category, Path: b.Root, Record: rec}
+				if variants {
+					// ListLibrary reads frontmatter only, so the body,
+					// markdown references and overlays a summary needs
+					// have to be loaded here.
+					full, err := skill.LoadBundle(b.Root)
+					if err != nil {
+						issues = append(issues, skill.Issue{Code: "skill_load", Severity: "error", Message: err.Error(), Path: b.Root})
+					} else {
+						summaries := render.Summarize(full, nil)
+						max := render.MaxDivergence(summaries)
+						item.Variants = summaries
+						item.MaxDivergence = &max
+					}
+				}
+				items = append(items, item)
 			}
 			sortListItems(items, sortBy)
 			if jsonOut {
 				return printJSON(cmd, map[string]any{"skills": items, "category_counts": categoryCounts, "issues": issues})
 			}
 			for _, item := range items {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s	%s	%s	%s	%s\n", item.Name, item.Description, shortDate(item.ModifiedAt), shortDate(latestInstallTS(item.Installs)), item.Path)
+				divergence := ""
+				if item.MaxDivergence != nil {
+					divergence = fmt.Sprintf("%.1f%%\t", 100**item.MaxDivergence)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s	%s	%s	%s	%s%s\n", item.Name, item.Description, shortDate(item.ModifiedAt), shortDate(latestInstallTS(item.Installs)), divergence, item.Path)
 			}
 			for _, issue := range issues {
 				if issue.Path != "" {
@@ -351,6 +376,7 @@ func newListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&library, "library", "", "Library directory")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero when library load issues exist")
+	cmd.Flags().BoolVar(&variants, "variants", false, "Report how far each skill's render diverges per target; loads every bundle in full, so it is slower than the default listing")
 	cmd.Flags().StringVar(&sortBy, "sort", "name", "Sort by: name, changed, installed, used")
 	return cmd
 }
@@ -489,17 +515,20 @@ func newInspectCmd() *cobra.Command {
 				LogPath:    events.DefaultPath(),
 				InstallOpt: install.Options{HomeDir: userHomeDir(), Scope: render.ScopeUser},
 			})
+			summaries := render.Summarize(bundle, nil)
 			if jsonOut {
 				return printJSON(cmd, struct {
 					*skill.Bundle
 					metadata.Record
-				}{bundle, rec})
+					Variants []render.VariantSummary `json:"variants"`
+				}{bundle, rec, summaries})
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s\n%s\n", bundle.Frontmatter.Name, bundle.Frontmatter.Description)
 			if len(bundle.Resources) > 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "Resources: %d\n", len(bundle.Resources))
 			}
 			printMetadata(cmd, rec)
+			printVariantSummaries(cmd, summaries)
 			return nil
 		},
 	}
@@ -535,7 +564,7 @@ func orUnknown(ts string) string {
 }
 
 func newValidateCmd() *cobra.Command {
-	var jsonOut bool
+	var jsonOut, strict bool
 	cmd := &cobra.Command{
 		Use:   "validate [skill-dir]",
 		Short: "Validate a skill directory",
@@ -592,6 +621,9 @@ func newValidateCmd() *cobra.Command {
 				for _, issue := range issues {
 					fmt.Fprintf(cmd.ErrOrStderr(), "%s\t%s\t%s\t%s\n", issue.Severity, issue.Code, issue.Path, issue.Message)
 				}
+				if strict && len(issues) > 0 {
+					return exitcodes.Wrap(fmt.Errorf("validation warnings detected"), exitcodes.ExitData, exitcodes.KindValidation, "validate skill")
+				}
 				fmt.Fprintln(cmd.OutOrStdout(), "valid")
 				return nil
 			}
@@ -602,6 +634,7 @@ func newValidateCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
+	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero when warnings exist, not only errors")
 	return cmd
 }
 
@@ -673,6 +706,38 @@ func printRenderResults(cmd *cobra.Command, results []render.Rendered, jsonOut, 
 		}
 	}
 	return nil
+}
+
+// printVariantSummaries reports what each target diverges by. An ordinary
+// portable skill has nothing to say here, so the section is omitted entirely
+// rather than printing a wall of zeroes.
+func printVariantSummaries(cmd *cobra.Command, summaries []render.VariantSummary) {
+	if !render.HasVariants(summaries) {
+		return
+	}
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Variants:\n")
+	for _, summary := range summaries {
+		switch summary.Status {
+		case render.StatusDisabled, render.StatusRefused:
+			fmt.Fprintf(out, "  %-12s %s: %s\n", summary.Target, summary.Status, summary.Reason)
+			continue
+		}
+		fmt.Fprintf(out, "  %-12s %.1f%% replaced", summary.Target, 100*summary.Divergence)
+		if len(summary.Blocks) > 0 {
+			fmt.Fprintf(out, "; blocks: %s", strings.Join(summary.Blocks, ", "))
+		}
+		if len(summary.Files) > 0 {
+			fmt.Fprintf(out, "; files: %s", strings.Join(summary.Files, ", "))
+		}
+		fmt.Fprintln(out)
+		for _, name := range render.SortedTermNames(summary.Terms) {
+			fmt.Fprintf(out, "  %-12s term %s: %s\n", "", name, summary.Terms[name])
+		}
+		for _, warning := range summary.Warnings {
+			fmt.Fprintf(out, "  %-12s warning: %s\n", "", warning)
+		}
+	}
 }
 
 // printRenderWarnings surfaces per-target capability findings on stderr, so

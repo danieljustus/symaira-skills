@@ -218,3 +218,33 @@ Persist the report under ~/.hermes/reports/coupled/.
 		t.Errorf("warnings must reach stderr:\n%s", stderr)
 	}
 }
+
+// TestValidateStrictFailsOnWarnings gives the migration work a CI gate: a
+// skill that is valid but still harness-coupled can be made to fail.
+func TestValidateStrictFailsOnWarnings(t *testing.T) {
+	home := t.TempDir()
+	_, _, _ = runCmd(t, home, "init")
+
+	skillDir := filepath.Join(t.TempDir(), "coupled")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `---
+name: coupled
+description: A valid skill whose body is nevertheless bound to one harness.
+category: developer-tools
+---
+
+Persist the report under ~/.hermes/reports/coupled/.
+`
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := runCmd(t, home, "validate", skillDir); err != nil {
+		t.Fatalf("without --strict a warning must not fail: %v", err)
+	}
+	if _, _, err := runCmd(t, home, "validate", "--strict", skillDir); err == nil {
+		t.Error("expected --strict to fail on a warning")
+	}
+}
