@@ -78,6 +78,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Contract documented in
     [docs/harness-capabilities.md](docs/harness-capabilities.md).
 
+- Per-target divergence reporting, the drift control for harness variants
+  (#208).
+  - `symskills inspect` gains a `Variants` section: per target, how much of
+    the canonical text the render replaces, which blocks and terms resolved,
+    which reference files changed, and why a target is disabled or refused.
+    The section is omitted for a skill that uses no variants.
+  - `symskills list --variants` gives the fleet view — one divergence figure
+    per skill plus full per-target detail in `--json`. It loads every bundle
+    in full, so it is a flag rather than the default.
+  - `symskills validate --strict` exits non-zero when warnings exist, not
+    only errors — a CI gate for a library being migrated off harness-bound
+    prose.
+  - Divergence is reported, never enforced: a skill whose render replaces
+    most of its body is probably two skills, and that is an editorial
+    decision the figure exists to surface, not to make.
+  - Committed per-target golden fixtures for a skill exercising blocks,
+    terms and only/except regions, plus invariants asserted against those
+    same trees so a careless `-update` cannot bless output containing
+    leftover markers or unresolved placeholders.
+
 ### Changed
 
 - Frontmatter metadata namespaced under a harness target name is rendered for

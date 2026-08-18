@@ -162,8 +162,12 @@ of a second, drifting copy.
 
 `symskills render --explain` reports per target which blocks were substituted,
 which term values were used, which reference files changed, and how much of
-the canonical text this harness replaces. A skill whose render replaces most
-of its body is probably two skills; the figure is reported, never enforced.
+the canonical text this harness replaces. `symskills inspect` shows the same
+for one skill (including disabled and refused targets), and `symskills list
+--variants` gives the fleet view with one divergence figure per skill. A skill
+whose render replaces most of its body is probably two skills; the figure is
+reported, never enforced. `symskills validate --strict` turns warnings into a
+non-zero exit for CI.
 
 Blocks and terms are opt-in: a skill that uses neither renders byte-identical
 to before. See [docs/harness-variants.md](docs/harness-variants.md) for the
@@ -278,9 +282,9 @@ alias = "review" # optional target-specific alias
 |---------|---------|
 | `init` | Create XDG config and data directories |
 | `import <skill-dir>` | Copy an existing skill into the managed library (use `--update` to re-import over an existing skill; `--batch` imports a whole directory) |
-| `list` | List managed skills (with per-skill metadata; `--sort=name\|changed\|installed\|used`) |
-| `inspect <skill-dir>` | Show parsed SKILL.md + symskills metadata |
-| `validate <skill-dir>` | Validate portable skill metadata and references |
+| `list` | List managed skills (with per-skill metadata; `--sort=name\|changed\|installed\|used`; `--variants` adds per-target divergence) |
+| `inspect <skill-dir>` | Show parsed SKILL.md + symskills metadata, plus what each target's render diverges by |
+| `validate <skill-dir>` | Validate portable skill metadata and references (`--strict` fails on warnings too) |
 | `render [skill-dir]` | Render target-specific skill folders (or use `--profile <name>`; `--explain` reports the harness variants each target resolved, `--ignore-capabilities` forces a refused target) |
 | `diff <skill-dir>` | Compare rendered output with installed target |
 | `history <skill>` | List the versioned commit history of a skill (revision, timestamp, operation, changed files) |

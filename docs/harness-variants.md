@@ -130,10 +130,37 @@ resolved, the markdown files whose content changed, and a divergence figure
 (how many bytes of the canonical text this harness replaces). The same data
 is in `render --json` under `variants`.
 
+`symskills inspect` reports the same per target for one skill, including
+targets that are disabled or refuse to render:
+
+```console
+$ symskills inspect ~/.local/share/symskills/library/issue-sweep
+…
+Variants:
+  opencode     10.4% replaced; files: references/execution-contract.md
+               term report_dir: ~/.local/state/symskills/reports
+  claude       41.4% replaced; blocks: dispatch, worker-isolation; files: references/execution-contract.md
+               term report_dir: ~/.local/state/symskills/reports
+  hermes        5.5% replaced; files: references/execution-contract.md
+               term report_dir: ~/.hermes/reports
+```
+
+The section is omitted entirely for a skill that uses no variants, so an
+ordinary portable skill does not grow a wall of zeroes.
+
+`symskills list --variants` gives the fleet view: one divergence figure per
+skill (the largest across its rendered targets) plus the full per-target
+detail in `--json`. It loads every bundle in full and renders each once per
+target, so it is slower than the default listing — which is why it is a flag
+rather than the default.
+
 Divergence is reported, never enforced. A skill whose Claude render replaces
 most of its body is telling you something: it is probably **two skills**, not
 one skill with an overlay. Splitting it is a human editorial decision, and
 the number exists to make that decision visible early.
+
+`symskills validate --strict` exits non-zero when warnings exist, not only
+errors — a CI gate for a library you are migrating off harness-bound prose.
 
 ## When not to use this
 
