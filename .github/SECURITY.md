@@ -6,7 +6,7 @@ Only the latest release is supported with security updates.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| latest (v0.1.x) | :white_check_mark: |
+| latest (v0.4.x) | :white_check_mark: |
 | older releases | :x:                |
 
 ## Reporting a Vulnerability
