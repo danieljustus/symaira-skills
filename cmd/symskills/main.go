@@ -592,7 +592,7 @@ func newValidateCmd() *cobra.Command {
 
 func newRenderCmd() *cobra.Command {
 	var targetName, output, profileName string
-	var jsonOut bool
+	var jsonOut, explain bool
 	cmd := &cobra.Command{
 		Use:   "render [skill-dir]",
 		Short: "Render a skill or profile for supported harness targets",
@@ -614,7 +614,7 @@ func newRenderCmd() *cobra.Command {
 				if len(args) > 0 {
 					return exitcodes.Wrap(fmt.Errorf("skill-dir is not used with --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "render profile")
 				}
-				return renderProfile(cmd, cfg, out, targets, profileName, jsonOut)
+				return renderProfile(cmd, cfg, out, targets, profileName, jsonOut, explain)
 			}
 			dir, err := resolveSkillDir(args, "skill-dir is required without --profile", cfg.LibraryDir)
 			if err != nil {
@@ -631,27 +631,61 @@ func newRenderCmd() *cobra.Command {
 				return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render skill")
 			}
 			logger.Record(events.Event{Event: events.EventRender, Skill: bundle.Frontmatter.Name, SkillVersion: bundle.Frontmatter.Version, Target: targetName, Path: out, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
-			return printRenderResults(cmd, results, jsonOut)
+			return printRenderResults(cmd, results, jsonOut, explain)
 		},
 	}
 	cmd.Flags().StringVar(&targetName, "target", "all", "Target harness: all, opencode, claude, codex, hermes, antigravity, openclaw")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Render output directory")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	cmd.Flags().StringVar(&profileName, "profile", "", "Render all skills from a context profile")
+	cmd.Flags().BoolVar(&explain, "explain", false, "Report the harness-specific blocks, terms, and files each target resolved")
 	return cmd
 }
 
-func printRenderResults(cmd *cobra.Command, results []render.Rendered, jsonOut bool) error {
+func printRenderResults(cmd *cobra.Command, results []render.Rendered, jsonOut, explain bool) error {
 	if jsonOut {
 		return printJSON(cmd, results)
 	}
 	for _, result := range results {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", result.Target, result.Name, result.Source, result.Path)
+		if explain {
+			printVariantExplanation(cmd, result)
+		}
 	}
 	return nil
 }
 
-func renderProfile(cmd *cobra.Command, cfg *config.Config, output string, targets []render.Target, profileName string, jsonOut bool) error {
+// printVariantExplanation reports what one target changed relative to the
+// canonical source, so divergence stays visible without diffing two trees.
+func printVariantExplanation(cmd *cobra.Command, result render.Rendered) {
+	out := cmd.OutOrStdout()
+	report := result.Variants
+	if report == nil {
+		fmt.Fprintf(out, "  no harness-specific variants; canonical text rendered verbatim\n")
+		return
+	}
+	if len(report.Blocks) > 0 {
+		fmt.Fprintf(out, "  blocks:\t%s\n", strings.Join(report.Blocks, ", "))
+	}
+	names := make([]string, 0, len(report.Terms))
+	for name := range report.Terms {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Fprintf(out, "  term %s:\t%s\n", name, report.Terms[name])
+	}
+	if len(report.Files) > 0 {
+		fmt.Fprintf(out, "  files:\t%s\n", strings.Join(report.Files, ", "))
+	}
+	if report.SourceBytes > 0 {
+		fmt.Fprintf(out, "  divergence:\t%d of %d bytes replaced (%.1f%%)\n",
+			report.ReplacedBytes, report.SourceBytes,
+			100*float64(report.ReplacedBytes)/float64(report.SourceBytes))
+	}
+}
+
+func renderProfile(cmd *cobra.Command, cfg *config.Config, output string, targets []render.Target, profileName string, jsonOut, explain bool) error {
 	results, issues, err := profile.RenderProfile(cfg.LibraryDir, cfg.ProfilesDir, ".", output, targets, profileName)
 	logger := newEventLogger()
 	if err != nil {
@@ -679,7 +713,7 @@ func renderProfile(cmd *cobra.Command, cfg *config.Config, output string, target
 	for _, result := range results {
 		logger.Record(events.Event{Event: events.EventRender, Skill: result.Name, SkillVersion: result.Frontmatter.Version, Target: string(result.Target), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
 	}
-	return printRenderResults(cmd, results, jsonOut)
+	return printRenderResults(cmd, results, jsonOut, explain)
 }
 
 func newDiffCmd() *cobra.Command {

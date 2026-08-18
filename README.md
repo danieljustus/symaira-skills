@@ -72,6 +72,8 @@ my-skill/
       prepend.md              # optional
       append.md               # optional
       frontmatter.toml        # optional
+      blocks/                 # optional per-target block overrides
+        <block-id>.md
     claude/
     codex/
     hermes/
@@ -101,6 +103,10 @@ enabled = true
 [targets.hermes]
 enabled = true
 category = "developer-tools"
+
+[terms.report_dir]
+default = "~/.local/state/symskills/reports"
+hermes = "~/.hermes/reports"
 ```
 
 An overlay `frontmatter.toml` can add target metadata:
@@ -110,6 +116,59 @@ An overlay `frontmatter.toml` can add target metadata:
 workflow = "github"
 audience = "maintainers"
 ```
+
+## Harness Variants
+
+Paths and metadata are not the only thing harnesses disagree about. A
+Hermes-native worker contract names `delegate_task` and a tier label; the
+Claude Code equivalent names the Agent tool and a git worktree. Rendering the
+Hermes sentence into the Claude copy produces an install that passes every
+check and then refuses itself at use time.
+
+Harness variants keep that difference inside one canonical source. The
+portable `SKILL.md` stays complete and readable on its own; each harness's
+deviation is a named delta keyed to it.
+
+Mark a replaceable region in the canonical text:
+
+```markdown
+<!-- symskills:block worker-isolation -->
+Hermes only. Dispatch each worker with `delegate_task` at the configured tier.
+<!-- /symskills:block -->
+```
+
+and give one target its own version in
+`overlays/claude/blocks/worker-isolation.md`. Every other target keeps the
+canonical text, and the markers never reach a rendered skill.
+
+Keep or drop a region without a second file:
+
+```markdown
+<!-- symskills:only hermes,codex -->
+Never invoke an external coding-agent executable.
+<!-- /symskills:only -->
+```
+
+Substitute a single phrase from the `[terms]` table in `symskills.toml`:
+
+```markdown
+Persist the run report under {{term:report_dir}}/issue-sweep/.
+```
+
+Blocks and terms resolve in `SKILL.md` and in every markdown reference;
+scripts, assets, and data files travel byte-identical. An override must name a
+block the source defines — that rule is what keeps an overlay a delta instead
+of a second, drifting copy.
+
+`symskills render --explain` reports per target which blocks were substituted,
+which term values were used, which reference files changed, and how much of
+the canonical text this harness replaces. A skill whose render replaces most
+of its body is probably two skills; the figure is reported, never enforced.
+
+Blocks and terms are opt-in: a skill that uses neither renders byte-identical
+to before. See [docs/harness-variants.md](docs/harness-variants.md) for the
+full contract, the validation codes, and when to disable a target instead of
+overlaying it.
 
 ## Flow Skills (symbrowse)
 
@@ -183,7 +242,7 @@ alias = "review" # optional target-specific alias
 | `list` | List managed skills (with per-skill metadata; `--sort=name\|changed\|installed\|used`) |
 | `inspect <skill-dir>` | Show parsed SKILL.md + symskills metadata |
 | `validate <skill-dir>` | Validate portable skill metadata and references |
-| `render [skill-dir]` | Render target-specific skill folders (or use `--profile <name>`) |
+| `render [skill-dir]` | Render target-specific skill folders (or use `--profile <name>`; `--explain` reports the harness variants each target resolved) |
 | `diff <skill-dir>` | Compare rendered output with installed target |
 | `history <skill>` | List the versioned commit history of a skill (revision, timestamp, operation, changed files) |
 | `show <skill> --rev <rev>` | Show a skill's state at a past revision (`--diff` adds a diff against the current state) |

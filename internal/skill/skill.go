@@ -13,6 +13,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/danieljustus/symaira-skills/internal/fsutil"
+	"github.com/danieljustus/symaira-skills/internal/variant"
 	"github.com/danieljustus/symaira-skills/internal/vcs"
 	"gopkg.in/yaml.v3"
 )
@@ -54,6 +55,11 @@ type Frontmatter struct {
 type Manifest struct {
 	Skill   ManifestSkill           `toml:"skill" json:"skill"`
 	Targets map[string]TargetConfig `toml:"targets" json:"targets"`
+	// Terms is the harness-term table: term name -> ("default"|target) ->
+	// value. A {{term:name}} placeholder in SKILL.md or a markdown
+	// reference resolves against it. Every term must carry a "default" so
+	// the canonical source states something true and harness-neutral.
+	Terms map[string]map[string]string `toml:"terms" json:"terms,omitempty"`
 }
 
 // ManifestSkill contains portable source metadata.
@@ -97,6 +103,28 @@ type Bundle struct {
 	// path, size, mode, executable flag). Symlinked directories are not
 	// descended into; symlinked files are resolved to their target.
 	Resources []Resource `json:"resources"`
+	// Markdown holds every markdown resource outside overlays/ as
+	// relative slash path -> content. It is read once at load so both
+	// validation and per-target rendering resolve blocks and terms in
+	// references without walking the tree again.
+	Markdown map[string]string `json:"-"`
+	// BlockOverrides holds the per-target block replacements found under
+	// overlays/<dir>/blocks/<id>.md, as overlay directory -> block id ->
+	// replacement text.
+	BlockOverrides map[string]map[string]string `json:"-"`
+}
+
+// KnownTargets reports the harness target names this binary supports. It is
+// populated by internal/render, which owns the target registry and cannot be
+// imported here without an import cycle. A nil hook disables every check that
+// needs the registry rather than guessing at it.
+var KnownTargets func() []string
+
+func knownTargets() []string {
+	if KnownTargets == nil {
+		return nil
+	}
+	return KnownTargets()
 }
 
 // Issue is one validation finding.
@@ -174,8 +202,98 @@ func LoadBundle(root string) (*Bundle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inventory bundle resources: %w", err)
 	}
+	markdown, err := loadMarkdown(abs, resources)
+	if err != nil {
+		return nil, fmt.Errorf("read bundle markdown: %w", err)
+	}
+	overrides, err := loadBlockOverrides(abs)
+	if err != nil {
+		return nil, fmt.Errorf("read overlay blocks: %w", err)
+	}
 
-	return &Bundle{Root: abs, Frontmatter: fm, Manifest: manifest, Body: body, Resources: resources}, nil
+	return &Bundle{
+		Root:           abs,
+		Frontmatter:    fm,
+		Manifest:       manifest,
+		Body:           body,
+		Resources:      resources,
+		Markdown:       markdown,
+		BlockOverrides: overrides,
+	}, nil
+}
+
+// IsMarkdown reports whether a bundle-relative path is a markdown resource
+// that participates in block and term resolution. Only markdown is resolved:
+// scripts and data files travel byte-identical, so a placeholder-looking
+// string in a script is never rewritten.
+func IsMarkdown(rel string) bool {
+	lower := strings.ToLower(rel)
+	return strings.HasSuffix(lower, ".md") || strings.HasSuffix(lower, ".markdown")
+}
+
+// isOverlayPath reports whether a bundle-relative path lives under overlays/,
+// which is render input rather than shipped content.
+func isOverlayPath(rel string) bool {
+	return rel == "overlays" || strings.HasPrefix(rel, "overlays/")
+}
+
+// loadMarkdown reads every markdown resource outside overlays/ into memory.
+func loadMarkdown(root string, resources []Resource) (map[string]string, error) {
+	out := map[string]string{}
+	for _, res := range resources {
+		if isOverlayPath(res.Path) || !IsMarkdown(res.Path) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(res.Path)))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", res.Path, err)
+		}
+		out[res.Path] = string(data)
+	}
+	return out, nil
+}
+
+// loadBlockOverrides reads overlays/<dir>/blocks/<id>.md for every overlay
+// directory. A missing overlays/ tree yields an empty map, not an error.
+func loadBlockOverrides(root string) (map[string]map[string]string, error) {
+	overlaysDir := filepath.Join(root, "overlays")
+	entries, err := os.ReadDir(overlaysDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return map[string]map[string]string{}, nil
+		}
+		return nil, err
+	}
+	out := map[string]map[string]string{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		blocksDir := filepath.Join(overlaysDir, entry.Name(), variant.BlocksDir)
+		files, err := os.ReadDir(blocksDir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		blocks := map[string]string{}
+		for _, file := range files {
+			if file.IsDir() || !IsMarkdown(file.Name()) {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(blocksDir, file.Name()))
+			if err != nil {
+				return nil, err
+			}
+			id := strings.TrimSuffix(strings.TrimSuffix(file.Name(), ".markdown"), ".md")
+			blocks[id] = string(data)
+		}
+		if len(blocks) > 0 {
+			out[entry.Name()] = blocks
+		}
+	}
+	return out, nil
 }
 
 // loadResources inventories every non-SKILL.md file under root: relative
@@ -476,6 +594,121 @@ func Validate(bundle *Bundle) []Issue {
 			}
 		}
 	}
+	issues = append(issues, validateVariants(bundle)...)
+	return issues
+}
+
+// renderBlockingCodes lists the validation codes that make a render refuse
+// rather than emit output. They share one property: the rendered result
+// would silently misrepresent the source — a traversing overlay reference, a
+// malformed marker that would ship as literal HTML, an override addressing a
+// block that does not exist, or a placeholder that cannot resolve. Every
+// other error-severity code is reported by `validate` and still renders.
+var renderBlockingCodes = map[string]bool{
+	"overlay_reference_missing":     true,
+	variant.CodeMarkerMalformed:     true,
+	variant.CodeBlockIDInvalid:      true,
+	variant.CodeBlockNested:         true,
+	variant.CodeBlockUnclosed:       true,
+	variant.CodeBlockUnmatchedClose: true,
+	variant.CodeBlockCloseMismatch:  true,
+	variant.CodeBlockDuplicateID:    true,
+	variant.CodeTargetListEmpty:     true,
+	variant.CodeOverrideUnknown:     true,
+	variant.CodeTermUnknown:         true,
+	variant.CodeTermNameInvalid:     true,
+	variant.CodeTermDefaultRequired: true,
+}
+
+// IsRenderBlocking reports whether an error-severity validation code must
+// stop a render instead of only being reported.
+func IsRenderBlocking(code string) bool { return renderBlockingCodes[code] }
+
+// variantIssues converts variant problems into validation issues for one path.
+func variantIssues(path string, problems []variant.Problem) []Issue {
+	issues := make([]Issue, 0, len(problems))
+	for _, problem := range problems {
+		message := problem.Message
+		if problem.Line > 0 {
+			message = fmt.Sprintf("line %d: %s", problem.Line, problem.Message)
+		}
+		issues = append(issues, Issue{Code: problem.Code, Severity: problem.Severity, Message: message, Path: path})
+	}
+	return issues
+}
+
+// validateVariants checks the harness-variant constructs across SKILL.md and
+// every markdown reference: marker structure, bundle-wide unique block ids,
+// resolvable terms, and overlay overrides that address a block the canonical
+// source actually defines. The last check is what keeps an overlay a delta
+// keyed to the source instead of a second, drifting copy of it.
+func validateVariants(bundle *Bundle) []Issue {
+	var issues []Issue
+	known := knownTargets()
+
+	paths := make([]string, 0, len(bundle.Markdown)+1)
+	for path := range bundle.Markdown {
+		paths = append(paths, path)
+	}
+	slices.Sort(paths)
+	paths = append([]string{"SKILL.md"}, paths...)
+
+	var sourceIDs []string
+	definedIn := map[string]string{}
+	for _, path := range paths {
+		text := bundle.Body
+		if path != "SKILL.md" {
+			text = bundle.Markdown[path]
+		}
+		scan, problems := variant.ScanText(text)
+		issues = append(issues, variantIssues(path, problems)...)
+		issues = append(issues, variantIssues(path, variant.CheckRegionTargets(scan.Regions, known))...)
+		for _, id := range scan.BlockIDs {
+			if prev, dup := definedIn[id]; dup {
+				issues = append(issues, Issue{
+					Code:     variant.CodeBlockDuplicateID,
+					Severity: variant.SeverityError,
+					Message:  fmt.Sprintf("block id %q is already defined in %s; ids address a block across the whole skill and must be unique", id, prev),
+					Path:     path,
+				})
+				continue
+			}
+			definedIn[id] = path
+			sourceIDs = append(sourceIDs, id)
+		}
+		for _, name := range scan.Terms {
+			if _, ok := bundle.Manifest.Terms[name]; !ok {
+				issues = append(issues, Issue{
+					Code:     variant.CodeTermUnknown,
+					Severity: variant.SeverityError,
+					Message:  fmt.Sprintf("term %q is referenced but not defined in [terms]", name),
+					Path:     path,
+				})
+			}
+		}
+	}
+
+	overrideIDs := map[string][]string{}
+	dirs := make([]string, 0, len(bundle.BlockOverrides))
+	for dir := range bundle.BlockOverrides {
+		dirs = append(dirs, dir)
+	}
+	slices.Sort(dirs)
+	for _, dir := range dirs {
+		for id := range bundle.BlockOverrides[dir] {
+			overrideIDs[dir] = append(overrideIDs[dir], id)
+		}
+		if cfg, ok := bundle.Manifest.Targets[dir]; ok && !cfg.Enabled {
+			issues = append(issues, Issue{
+				Code:     variant.CodeOverrideUnused,
+				Severity: variant.SeverityWarning,
+				Message:  fmt.Sprintf("target %q is disabled but ships block overrides; they are never rendered", dir),
+				Path:     "overlays/" + dir + "/" + variant.BlocksDir,
+			})
+		}
+	}
+	issues = append(issues, variantIssues("overlays", variant.CheckOverrides(sourceIDs, overrideIDs))...)
+	issues = append(issues, variantIssues("symskills.toml", variant.CheckTerms(bundle.Manifest.Terms, known))...)
 	return issues
 }
 
