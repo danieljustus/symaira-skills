@@ -31,7 +31,7 @@ import (
 	"github.com/danieljustus/symaira-skills/internal/vcs"
 )
 
-var version = "0.1.9"
+var version = "0.4.0"
 
 func main() {
 	os.Exit(runMain(newRootCmd(version), os.Args[1:]))
