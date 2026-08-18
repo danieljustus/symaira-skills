@@ -18,7 +18,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-<!-- Add user-visible changes here during development. -->
+### Added
+
+- Harness variants: one canonical skill source can now carry harness-specific
+  *content*, not just harness-specific paths and metadata (#208).
+  - `<!-- symskills:block <id> -->` marks a replaceable region in `SKILL.md`
+    or any markdown reference; `overlays/<target>/blocks/<id>.md` supplies
+    that target's version. An empty override drops the region.
+  - `<!-- symskills:only a,b -->` and `<!-- symskills:except a,b -->` keep or
+    drop a region without a second file.
+  - `{{term:name}}` substitutes a phrase from a new `[terms]` table in
+    `symskills.toml`; every term requires a `default` so the canonical source
+    always states something harness-neutral.
+  - `symskills render --explain` reports per target which blocks were
+    substituted, which term values were resolved, which reference files
+    changed, and the resulting divergence from the canonical text. The same
+    data is in `render --json` under `variants`.
+  - New validation codes, all reported by `symskills validate`:
+    `variant_marker_malformed`, `block_id_invalid`, `block_nested`,
+    `block_unclosed`, `block_unmatched_close`, `block_close_mismatch`,
+    `block_duplicate_id`, `block_target_list_empty`, `block_target_unknown`,
+    `block_override_unknown`, `block_override_unused`, `term_unknown`,
+    `term_name_invalid`, `term_default_required`. The error-severity codes
+    refuse the render rather than shipping output that misrepresents the
+    source.
+  - Contract documented in [docs/harness-variants.md](docs/harness-variants.md).
+
+  Blocks and terms are opt-in. A skill that uses neither renders
+  byte-identical, keeps the same `source_hash`, and reports no new
+  validation findings.
 
 ## [v0.3.2] - 2026-08-15
 

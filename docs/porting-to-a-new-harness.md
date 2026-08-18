@@ -54,6 +54,10 @@ In the same file, add a spec to the `Targets` registry slice. Follow one of the 
 
 If the target needs target-specific content prepended or appended to the skill frontmatter or body, create overlay files under the source skill's `overlays/<target>/` directory. The convention is documented in `internal/render/render.go`.
 
+For differences *inside* the body — a worker-dispatch contract, a report path, a paragraph that only applies to some harnesses — use harness variants instead of prepend/append: a skill marks the region with `<!-- symskills:block <id> -->` and the target supplies `overlays/<target>/blocks/<id>.md`, or uses a `{{term:...}}` placeholder resolved from the `[terms]` table. Appending contradicting text under an absolute instruction does not work; replacing the region does. See [harness-variants.md](harness-variants.md).
+
+The overlay directory name defaults to the target name, so a new target needs no registration for either mechanism. A user-defined target may point elsewhere with `overlay_dir`.
+
 ### 5. Update install-path verification
 
 `internal/install/install.go` reads from `render.LookupSpec` automatically — no switch or case statement needs editing. Run the golden tests (step 8) to confirm paths match expectations.

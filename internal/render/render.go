@@ -9,11 +9,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 	"github.com/danieljustus/symaira-skills/internal/fsutil"
 	"github.com/danieljustus/symaira-skills/internal/skill"
+	"github.com/danieljustus/symaira-skills/internal/variant"
 	"gopkg.in/yaml.v3"
 )
 
@@ -27,6 +30,18 @@ const (
 	TargetAntigravity Target = "antigravity"
 	TargetOpenClaw    Target = "openclaw"
 )
+
+// init publishes the target registry to the skill package, which validates
+// harness-variant markers but cannot import this package without a cycle.
+func init() {
+	skill.KnownTargets = func() []string {
+		names := make([]string, len(Targets))
+		for i, spec := range Targets {
+			names[i] = string(spec.Name)
+		}
+		return names
+	}
+}
 
 // DefaultTargets returns the list of all registered target names.
 func DefaultTargets() []Target {
@@ -280,6 +295,27 @@ type Rendered struct {
 	SkillMD     string            `json:"skill_md,omitempty"`
 	Source      string            `json:"source,omitempty"`
 	Profile     string            `json:"profile,omitempty"`
+	// Variants reports what this target changed relative to the canonical
+	// source. Nil when the skill uses no blocks and no terms.
+	Variants *VariantReport `json:"variants,omitempty"`
+	// Files holds resolved markdown resources (relative slash path ->
+	// content) that differ from the source because of a block override or
+	// a term. Paths absent here travel byte-identical.
+	Files map[string]string `json:"-"`
+}
+
+// VariantReport summarises the harness-specific deltas applied to one target.
+type VariantReport struct {
+	// Blocks lists the block ids replaced by an overlay override, sorted.
+	Blocks []string `json:"blocks,omitempty"`
+	// Terms maps each resolved term to the value this target received.
+	Terms map[string]string `json:"terms,omitempty"`
+	// Files lists the markdown resources whose content changed, sorted.
+	Files []string `json:"files,omitempty"`
+	// ReplacedBytes and SourceBytes give the per-target divergence: how
+	// much of the canonical text this harness replaces.
+	ReplacedBytes int `json:"replaced_bytes"`
+	SourceBytes   int `json:"source_bytes"`
 }
 
 // RenderTarget returns a target-specific SKILL.md without writing files.
@@ -288,13 +324,14 @@ func RenderTarget(bundle *skill.Bundle, target Target, meta ...RenderMeta) (Rend
 		return Rendered{}, fmt.Errorf("bundle is nil")
 	}
 
-	// Reject bundles that have error-severity overlay reference issues.
-	// This catches path traversal in prepend/append before any file is
-	// read or written (#80).  Other validation problems (missing
-	// description, empty body, etc.) are reported by `skills_validate`
-	// but do not block rendering here.
+	// Reject bundles whose validation errors would make the rendered output
+	// misrepresent the source: a traversing overlay reference (#80), a
+	// malformed variant marker, an override addressing a block that does
+	// not exist, or an unresolvable term. Other validation problems
+	// (missing description, empty body, etc.) are reported by
+	// `skills_validate` but do not block rendering here.
 	for _, issue := range skill.Validate(bundle) {
-		if issue.Severity == "error" && issue.Code == "overlay_reference_missing" {
+		if issue.Severity == "error" && skill.IsRenderBlocking(issue.Code) {
 			return Rendered{}, fmt.Errorf("validation error: %s", issue.Message)
 		}
 	}
@@ -339,7 +376,11 @@ func RenderTarget(bundle *skill.Bundle, target Target, meta ...RenderMeta) (Rend
 	if err := skill.ValidateSkillName(fm.Name); err != nil {
 		return Rendered{}, fmt.Errorf("invalid resolved name for target %s: %w", target, err)
 	}
-	body, err := renderBody(bundle, target, cfg)
+	composed, err := renderBody(bundle, target, cfg)
+	if err != nil {
+		return Rendered{}, err
+	}
+	body, files, report, err := resolveVariants(bundle, target, composed)
 	if err != nil {
 		return Rendered{}, err
 	}
@@ -347,12 +388,89 @@ func RenderTarget(bundle *skill.Bundle, target Target, meta ...RenderMeta) (Rend
 	if err != nil {
 		return Rendered{}, err
 	}
-	item := Rendered{Target: target, Name: fm.Name, Frontmatter: fm, SkillMD: skillMD}
+	item := Rendered{Target: target, Name: fm.Name, Frontmatter: fm, SkillMD: skillMD, Variants: report, Files: files}
 	if len(meta) > 0 {
 		item.Source = meta[0].Source
 		item.Profile = meta[0].Profile
 	}
 	return item, nil
+}
+
+// resolveVariants applies the harness-variant constructs for one target to
+// the composed SKILL.md body and to every markdown resource. It returns the
+// resolved body, the markdown resources whose content actually changed, and a
+// report of what changed. A skill that uses no blocks and no terms gets back
+// the input unchanged, an empty file map, and a nil report — the no-op path
+// that keeps existing renders byte-identical.
+func resolveVariants(bundle *skill.Bundle, target Target, composed string) (string, map[string]string, *VariantReport, error) {
+	opts := variant.Options{
+		Target:    string(target),
+		Overrides: bundle.BlockOverrides[overlayDir(target)],
+		Terms:     bundle.Manifest.Terms,
+	}
+
+	bodyResult, problems := variant.Apply(composed, opts)
+	if err := firstBlockingProblem("SKILL.md", problems); err != nil {
+		return "", nil, nil, err
+	}
+
+	report := &VariantReport{
+		Blocks:        append([]string(nil), bodyResult.Blocks...),
+		ReplacedBytes: bodyResult.ReplacedBytes,
+		SourceBytes:   bodyResult.SourceBytes,
+	}
+	terms := map[string]string{}
+	for name, value := range bodyResult.Terms {
+		terms[name] = value
+	}
+
+	paths := make([]string, 0, len(bundle.Markdown))
+	for path := range bundle.Markdown {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	files := map[string]string{}
+	for _, path := range paths {
+		source := bundle.Markdown[path]
+		result, problems := variant.Apply(source, opts)
+		if err := firstBlockingProblem(path, problems); err != nil {
+			return "", nil, nil, err
+		}
+		report.SourceBytes += result.SourceBytes
+		report.ReplacedBytes += result.ReplacedBytes
+		report.Blocks = append(report.Blocks, result.Blocks...)
+		for name, value := range result.Terms {
+			terms[name] = value
+		}
+		if result.Text != source {
+			files[path] = result.Text
+			report.Files = append(report.Files, path)
+		}
+	}
+
+	sort.Strings(report.Blocks)
+	report.Blocks = slices.Compact(report.Blocks)
+	if len(terms) > 0 {
+		report.Terms = terms
+	}
+	if len(report.Blocks) == 0 && len(report.Terms) == 0 && len(report.Files) == 0 {
+		return bodyResult.Text, map[string]string{}, nil, nil
+	}
+	return bodyResult.Text, files, report, nil
+}
+
+// firstBlockingProblem turns the first render-blocking variant problem into
+// an error. Markers inside overlay prepend/append fragments never reach
+// skill.Validate, so this is the guard that catches them.
+func firstBlockingProblem(path string, problems []variant.Problem) error {
+	for _, problem := range problems {
+		if problem.Severity != variant.SeverityError || !skill.IsRenderBlocking(problem.Code) {
+			continue
+		}
+		return fmt.Errorf("%s: %s", path, problem.String())
+	}
+	return nil
 }
 
 func renderBody(bundle *skill.Bundle, target Target, cfg skill.TargetConfig) (string, error) {
@@ -646,19 +764,48 @@ func sourceTreeHash(bundleRoot string) string {
 
 // sourceHash combines the once-per-bundle source tree hash with the
 // per-target rendered SKILL.md content and target name so re-renders with
-// unchanged input can be skipped.
-func sourceHash(treeHash, renderedSkillMD string, target Target) string {
+// unchanged input can be skipped. The tree hash covers the raw support
+// files, so resolved markdown resources — whose content depends on this
+// target's block overrides and terms — are mixed in separately. That mix is
+// skipped when the skill resolves no variants, keeping the hash of an
+// ordinary skill exactly what it was before harness variants existed.
+func sourceHash(treeHash, renderedSkillMD string, target Target, files map[string]string) string {
 	h := sha256.New()
 	h.Write([]byte(treeHash))
 	h.Write([]byte{0})
 	h.Write([]byte(renderedSkillMD))
 	h.Write([]byte{0})
 	h.Write([]byte(target))
+	if vh := variantFilesHash(files); vh != "" {
+		h.Write([]byte{0})
+		h.Write([]byte(vh))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// variantFilesHash hashes the resolved markdown resources in path order. An
+// empty map yields an empty hash so it contributes nothing.
+func variantFilesHash(files map[string]string) string {
+	if len(files) == 0 {
+		return ""
+	}
+	paths := make([]string, 0, len(files))
+	for path := range files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	h := sha256.New()
+	for _, path := range paths {
+		h.Write([]byte(path))
+		h.Write([]byte{0})
+		h.Write([]byte(files[path]))
+		h.Write([]byte{0})
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
 func writeRendered(root, dst string, item Rendered, target Target, treeHash string) error {
-	sh := sourceHash(treeHash, item.SkillMD, target)
+	sh := sourceHash(treeHash, item.SkillMD, target, item.Files)
 
 	// Read any existing marker so we can preserve install-time fields and
 	// check whether the output is already current.
@@ -692,6 +839,9 @@ func writeRendered(root, dst string, item Rendered, target Target, treeHash stri
 	if err := copySupportFiles(root, dst); err != nil {
 		return err
 	}
+	if err := writeResolvedFiles(dst, item.Files); err != nil {
+		return err
+	}
 	if err := os.WriteFile(filepath.Join(dst, "SKILL.md"), []byte(item.SkillMD), 0o644); err != nil {
 		return err
 	}
@@ -700,6 +850,27 @@ func writeRendered(root, dst string, item Rendered, target Target, treeHash stri
 	}
 	if err := os.WriteFile(markerPath, markerBytes, 0o644); err != nil {
 		return err
+	}
+	return nil
+}
+
+// writeResolvedFiles overwrites the copied markdown resources whose content
+// this target resolves differently. copySupportFiles has already placed the
+// canonical bytes, so only genuinely changed paths are rewritten.
+func writeResolvedFiles(dst string, files map[string]string) error {
+	paths := make([]string, 0, len(files))
+	for path := range files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		target := filepath.Join(dst, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, []byte(files[path]), 0o644); err != nil {
+			return err
+		}
 	}
 	return nil
 }
