@@ -73,10 +73,18 @@ func registerCustomTargets() error {
 			MetadataFile:     t.MetadataFile,
 			MetadataTemplate: t.MetadataTemplate,
 			OverlayDir:       t.OverlayDir,
+			Capabilities:     t.Capabilities,
 		})
 	}
 	if err := render.RegisterCustomTargets(specs); err != nil {
 		return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindConfig, "register custom targets")
+	}
+	declarations, err := config.LoadCapabilities()
+	if err != nil {
+		return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindConfig, "load capabilities")
+	}
+	if err := render.DeclareCapabilities(declarations); err != nil {
+		return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindConfig, "declare capabilities")
 	}
 	return nil
 }
@@ -577,6 +585,13 @@ func newValidateCmd() *cobra.Command {
 				return printJSON(cmd, result)
 			}
 			if !hasErrors {
+				// Warnings are findings, not noise: a skill can be valid and
+				// still be harness-coupled or ship dead overrides. They go to
+				// stderr so stdout stays exactly "valid" for callers that
+				// test it.
+				for _, issue := range issues {
+					fmt.Fprintf(cmd.ErrOrStderr(), "%s\t%s\t%s\t%s\n", issue.Severity, issue.Code, issue.Path, issue.Message)
+				}
 				fmt.Fprintln(cmd.OutOrStdout(), "valid")
 				return nil
 			}
@@ -592,7 +607,7 @@ func newValidateCmd() *cobra.Command {
 
 func newRenderCmd() *cobra.Command {
 	var targetName, output, profileName string
-	var jsonOut, explain bool
+	var jsonOut, explain, ignoreCapabilities bool
 	cmd := &cobra.Command{
 		Use:   "render [skill-dir]",
 		Short: "Render a skill or profile for supported harness targets",
@@ -614,6 +629,9 @@ func newRenderCmd() *cobra.Command {
 				if len(args) > 0 {
 					return exitcodes.Wrap(fmt.Errorf("skill-dir is not used with --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "render profile")
 				}
+				if ignoreCapabilities {
+					return exitcodes.Wrap(fmt.Errorf("--ignore-capabilities is not supported with --profile; force one skill at a time so each override is a deliberate choice"), exitcodes.ExitConfig, exitcodes.KindValidation, "render profile")
+				}
 				return renderProfile(cmd, cfg, out, targets, profileName, jsonOut, explain)
 			}
 			dir, err := resolveSkillDir(args, "skill-dir is required without --profile", cfg.LibraryDir)
@@ -624,7 +642,7 @@ func newRenderCmd() *cobra.Command {
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "load skill")
 			}
-			results, errs := render.RenderAll(bundle, out, targets)
+			results, errs := render.RenderAll(bundle, out, targets, render.RenderMeta{IgnoreCapabilities: ignoreCapabilities})
 			logger := newEventLogger()
 			if len(errs) > 0 {
 				logger.Record(events.Event{Event: events.EventRender, Skill: bundle.Frontmatter.Name, Target: targetName, Path: out, Outcome: events.OutcomeError, Error: errs[0].Error(), Actor: events.ActorCLI})
@@ -639,10 +657,12 @@ func newRenderCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	cmd.Flags().StringVar(&profileName, "profile", "", "Render all skills from a context profile")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Report the harness-specific blocks, terms, and files each target resolved")
+	cmd.Flags().BoolVar(&ignoreCapabilities, "ignore-capabilities", false, "Render even for a target that declares it lacks a capability the skill requires; the output declares no compatibility")
 	return cmd
 }
 
 func printRenderResults(cmd *cobra.Command, results []render.Rendered, jsonOut, explain bool) error {
+	printRenderWarnings(cmd, results)
 	if jsonOut {
 		return printJSON(cmd, results)
 	}
@@ -653,6 +673,16 @@ func printRenderResults(cmd *cobra.Command, results []render.Rendered, jsonOut, 
 		}
 	}
 	return nil
+}
+
+// printRenderWarnings surfaces per-target capability findings on stderr, so
+// they are visible in every output mode including --json.
+func printRenderWarnings(cmd *cobra.Command, results []render.Rendered) {
+	for _, result := range results {
+		for _, warning := range result.Warnings {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning\t%s\t%s\n", result.Target, warning)
+		}
+	}
 }
 
 // printVariantExplanation reports what one target changed relative to the
@@ -785,7 +815,7 @@ func newDiffCmd() *cobra.Command {
 
 func newInstallCmd() *cobra.Command {
 	var targetName, output, scopeName, modeName, profileName string
-	var jsonOut, dryRun, force, allowExecutable bool
+	var jsonOut, dryRun, force, allowExecutable, ignoreCapabilities bool
 	cmd := &cobra.Command{
 		Use:   "install [skill-dir]",
 		Short: "Render and install a skill or profile into a supported harness",
@@ -821,7 +851,8 @@ func newInstallCmd() *cobra.Command {
 			// The manifest may opt a skill into preserving executables
 			// ([skill] allow_executable = true in symskills.toml).
 			opts.AllowExecutable = opts.AllowExecutable || bundle.Manifest.Skill.AllowExecutable
-			rendered, errs := render.RenderAll(bundle, out, []render.Target{target})
+			rendered, errs := render.RenderAll(bundle, out, []render.Target{target}, render.RenderMeta{IgnoreCapabilities: ignoreCapabilities})
+			printRenderWarnings(cmd, rendered)
 			if len(rendered) == 0 {
 				if len(errs) > 0 {
 					newEventLogger().Record(events.Event{Event: events.EventInstall, Skill: bundle.Frontmatter.Name, Target: string(target), Outcome: events.OutcomeError, Error: errs[0].Error(), Actor: events.ActorCLI})
@@ -864,6 +895,7 @@ func newInstallCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Plan install without writing")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	cmd.Flags().BoolVar(&allowExecutable, "allow-executable", false, "Preserve executable bits on resource files instead of stripping them")
+	cmd.Flags().BoolVar(&ignoreCapabilities, "ignore-capabilities", false, "Install even for a target that declares it lacks a capability the skill requires; the installed skill declares no compatibility")
 	cmd.Flags().StringVar(&profileName, "profile", "", "Install all skills from a context profile")
 	return cmd
 }
@@ -1609,6 +1641,7 @@ func newTargetsCmd() *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "  Status:      %s (verification: %s, evidence: %s)\n", st.InstallState, st.VerificationStatus, st.Evidence)
 				fmt.Fprintf(cmd.OutOrStdout(), "  Skill Root:  %s (exists: %t, readable: %t)\n", st.EffectiveSkillRoot, st.SkillRootExists, st.SkillRootReadable)
 				fmt.Fprintf(cmd.OutOrStdout(), "  Skills:      %d managed, %d unmanaged\n", st.ManagedSkillsCount, st.UnmanagedSkillsCount)
+				fmt.Fprintf(cmd.OutOrStdout(), "  Runtime:     %s\n", formatRuntimeCapabilities(st.RuntimeCapabilities))
 				fmt.Fprintf(cmd.OutOrStdout(), "  Setup Hint:  %s\n\n", st.SetupHint)
 			}
 			return nil
@@ -1617,6 +1650,31 @@ func newTargetsCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output status as JSON")
 	cmd.Flags().StringVar(&scope, "scope", "user", "Scope to check (user or project)")
 	return cmd
+}
+
+// formatRuntimeCapabilities renders the declared harness capabilities in
+// vocabulary order. Undeclared entries print as "unknown" rather than being
+// omitted, so the gaps a user still has to fill in are visible.
+func formatRuntimeCapabilities(states map[string]string) string {
+	if len(states) == 0 {
+		return "no capabilities declared"
+	}
+	parts := make([]string, 0, len(states))
+	for _, name := range render.Capabilities {
+		state, ok := states[name]
+		if !ok {
+			state = render.CapabilityUnknown
+		}
+		switch state {
+		case render.CapabilitySupported:
+			parts = append(parts, name)
+		case render.CapabilityUnsupported:
+			parts = append(parts, "!"+name)
+		default:
+			parts = append(parts, "?"+name)
+		}
+	}
+	return strings.Join(parts, " ") + "   (! = unsupported, ? = undeclared)"
 }
 
 func newDiscoverCmd() *cobra.Command {

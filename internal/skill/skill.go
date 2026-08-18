@@ -70,6 +70,12 @@ type ManifestSkill struct {
 	// AllowExecutable preserves executable bits on resource files during
 	// install instead of stripping them (default policy).
 	AllowExecutable bool `toml:"allow_executable" json:"allow_executable"`
+	// Requires names the harness capabilities this skill needs to work at
+	// all. A target that declares it lacks one refuses to render, so a
+	// harness never receives a skill it cannot execute. A capability the
+	// target has not declared renders with a warning: undeclared is
+	// missing information, not evidence of absence.
+	Requires []string `toml:"requires" json:"requires,omitempty"`
 }
 
 // TargetConfig controls rendering and installation for one harness target.
@@ -112,6 +118,10 @@ type Bundle struct {
 	// overlays/<dir>/blocks/<id>.md, as overlay directory -> block id ->
 	// replacement text.
 	BlockOverrides map[string]map[string]string `json:"-"`
+	// BodyLineOffset is the number of SKILL.md lines the frontmatter
+	// occupies, so a finding in Body can be reported at its real line in
+	// the file rather than at its offset within the body.
+	BodyLineOffset int `json:"-"`
 }
 
 // KnownTargets reports the harness target names this binary supports. It is
@@ -211,6 +221,11 @@ func LoadBundle(root string) (*Bundle, error) {
 		return nil, fmt.Errorf("read overlay blocks: %w", err)
 	}
 
+	// parseSkillMD returns the body as a suffix of the normalised file, so
+	// the lines before it are exactly the frontmatter.
+	normalized := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	bodyOffset := strings.Count(normalized[:len(normalized)-len(body)], "\n")
+
 	return &Bundle{
 		Root:           abs,
 		Frontmatter:    fm,
@@ -219,6 +234,7 @@ func LoadBundle(root string) (*Bundle, error) {
 		Resources:      resources,
 		Markdown:       markdown,
 		BlockOverrides: overrides,
+		BodyLineOffset: bodyOffset,
 	}, nil
 }
 
@@ -624,13 +640,15 @@ var renderBlockingCodes = map[string]bool{
 // stop a render instead of only being reported.
 func IsRenderBlocking(code string) bool { return renderBlockingCodes[code] }
 
-// variantIssues converts variant problems into validation issues for one path.
-func variantIssues(path string, problems []variant.Problem) []Issue {
+// variantIssues converts variant problems into validation issues for one
+// path. lineOffset shifts a problem's line to its real position in the file,
+// which is non-zero for SKILL.md, whose body starts below the frontmatter.
+func variantIssues(path string, lineOffset int, problems []variant.Problem) []Issue {
 	issues := make([]Issue, 0, len(problems))
 	for _, problem := range problems {
 		message := problem.Message
 		if problem.Line > 0 {
-			message = fmt.Sprintf("line %d: %s", problem.Line, problem.Message)
+			message = fmt.Sprintf("line %d: %s", problem.Line+lineOffset, problem.Message)
 		}
 		issues = append(issues, Issue{Code: problem.Code, Severity: problem.Severity, Message: message, Path: path})
 	}
@@ -653,16 +671,35 @@ func validateVariants(bundle *Bundle) []Issue {
 	slices.Sort(paths)
 	paths = append([]string{"SKILL.md"}, paths...)
 
+	// Coupling is only meaningful for a skill that targets more than one
+	// harness. A skill deliberately scoped to a single enabled target may
+	// name it freely.
+	checkCoupling := len(known) > 0 && enabledTargetCount(bundle) != 1
+
 	var sourceIDs []string
 	definedIn := map[string]string{}
 	for _, path := range paths {
 		text := bundle.Body
+		lineOffset := bundle.BodyLineOffset
 		if path != "SKILL.md" {
 			text = bundle.Markdown[path]
+			lineOffset = 0
+		}
+		if checkCoupling {
+			for _, mention := range variant.FindMentions(text, known) {
+				issues = append(issues, Issue{
+					Code:     variant.CodeHarnessCoupling,
+					Severity: variant.SeverityWarning,
+					Message: fmt.Sprintf(
+						"line %d: names harness %q outside any symskills:only region; every other target renders this text too — scope it with a region, move the differing part into a {{term:...}}, or disable the other targets in symskills.toml",
+						mention.Line+lineOffset, mention.Name),
+					Path: path,
+				})
+			}
 		}
 		scan, problems := variant.ScanText(text)
-		issues = append(issues, variantIssues(path, problems)...)
-		issues = append(issues, variantIssues(path, variant.CheckRegionTargets(scan.Regions, known))...)
+		issues = append(issues, variantIssues(path, lineOffset, problems)...)
+		issues = append(issues, variantIssues(path, lineOffset, variant.CheckRegionTargets(scan.Regions, known))...)
 		for _, id := range scan.BlockIDs {
 			if prev, dup := definedIn[id]; dup {
 				issues = append(issues, Issue{
@@ -707,9 +744,21 @@ func validateVariants(bundle *Bundle) []Issue {
 			})
 		}
 	}
-	issues = append(issues, variantIssues("overlays", variant.CheckOverrides(sourceIDs, overrideIDs))...)
-	issues = append(issues, variantIssues("symskills.toml", variant.CheckTerms(bundle.Manifest.Terms, known))...)
+	issues = append(issues, variantIssues("overlays", 0, variant.CheckOverrides(sourceIDs, overrideIDs))...)
+	issues = append(issues, variantIssues("symskills.toml", 0, variant.CheckTerms(bundle.Manifest.Terms, known))...)
 	return issues
+}
+
+// enabledTargetCount counts the targets a manifest explicitly enables. A
+// skill with no manifest returns 0, which renders for every target.
+func enabledTargetCount(bundle *Bundle) int {
+	count := 0
+	for _, cfg := range bundle.Manifest.Targets {
+		if cfg.Enabled {
+			count++
+		}
+	}
+	return count
 }
 
 func safeRelativeFile(root, rel string) error {

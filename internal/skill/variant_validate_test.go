@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -238,5 +239,171 @@ Use {{mustache}} and {{term_without_colon}} freely.
 
 	if issues := Validate(loadForValidation(t, root)); len(issues) != 0 {
 		t.Errorf("expected no issues, got %+v", issues)
+	}
+}
+
+func TestValidateWarnsOnHarnessCouplingInUnscopedText(t *testing.T) {
+	withKnownTargets(t, "claude", "hermes", "codex")
+	root := filepath.Join(t.TempDir(), "coupled")
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: coupled
+description: A portable skill whose body is bound to one harness.
+category: developer-tools
+---
+
+Persist the run report under ~/.hermes/reports/coupled/.
+`)
+	issue, ok := issueFor(Validate(loadForValidation(t, root)), variant.CodeHarnessCoupling)
+	if !ok {
+		t.Fatalf("expected %s", variant.CodeHarnessCoupling)
+	}
+	if issue.Severity != "warning" {
+		t.Errorf("coupling warns, it does not block: %s", issue.Severity)
+	}
+	if !strings.Contains(issue.Message, "hermes") {
+		t.Errorf("message must name the harness: %s", issue.Message)
+	}
+}
+
+// TestValidateExemptsScopedAndFencedMentions covers the two places a harness
+// name is legitimate: inside an only-region, which exists to scope text to
+// named harnesses, and inside a fenced code block, where it is a command
+// being shown rather than an instruction being given.
+func TestValidateExemptsScopedAndFencedMentions(t *testing.T) {
+	withKnownTargets(t, "claude", "hermes", "codex")
+	root := filepath.Join(t.TempDir(), "scoped")
+	writeFile(t, filepath.Join(root, "SKILL.md"), "---\n"+
+		"name: scoped\n"+
+		"description: A portable skill that scopes every harness mention.\n"+
+		"category: developer-tools\n"+
+		"---\n\n"+
+		"<!-- symskills:only hermes -->\nUse the hermes report directory.\n<!-- /symskills:only -->\n\n"+
+		"```bash\nsymskills install --target claude ./my-skill\n```\n")
+
+	if issue, ok := issueFor(Validate(loadForValidation(t, root)), variant.CodeHarnessCoupling); ok {
+		t.Errorf("unexpected coupling warning: %s", issue.Message)
+	}
+}
+
+// TestValidateSkipsCouplingForSingleTargetSkill: a skill deliberately scoped
+// to one harness may name it freely.
+func TestValidateSkipsCouplingForSingleTargetSkill(t *testing.T) {
+	withKnownTargets(t, "claude", "hermes", "codex")
+	root := filepath.Join(t.TempDir(), "hermes-only")
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: hermes-only
+description: A skill that deliberately targets one harness.
+category: developer-tools
+---
+
+Dispatch every worker through hermes.
+`)
+	writeFile(t, filepath.Join(root, "symskills.toml"), "[targets.hermes]\nenabled = true\n")
+
+	if issue, ok := issueFor(Validate(loadForValidation(t, root)), variant.CodeHarnessCoupling); ok {
+		t.Errorf("a single-target skill must not be flagged: %s", issue.Message)
+	}
+}
+
+// TestValidateFlagsHarnessBoundBlockDefault: being inside a block is not an
+// exemption — the canonical text is what every target without an override
+// receives.
+func TestValidateFlagsHarnessBoundBlockDefault(t *testing.T) {
+	withKnownTargets(t, "claude", "hermes", "codex")
+	root := filepath.Join(t.TempDir(), "defaulted")
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: defaulted
+description: A skill whose canonical block default is harness-bound.
+category: developer-tools
+---
+
+<!-- symskills:block dispatch -->
+Dispatch each worker through hermes.
+<!-- /symskills:block -->
+`)
+	writeFile(t, filepath.Join(root, "overlays", "claude", "blocks", "dispatch.md"), "Use the Agent tool.\n")
+
+	if _, ok := issueFor(Validate(loadForValidation(t, root)), variant.CodeHarnessCoupling); !ok {
+		t.Error("a harness-bound block default still reaches every target without an override")
+	}
+}
+
+func TestValidateCouplingWordBoundary(t *testing.T) {
+	withKnownTargets(t, "claude", "hermes", "codex")
+	root := filepath.Join(t.TempDir(), "boundary")
+	writeFile(t, filepath.Join(root, "SKILL.md"), `---
+name: boundary
+description: A skill mentioning words that merely contain a harness name.
+category: developer-tools
+---
+
+Apply hermeneutics to the codexes in the archive.
+`)
+	if issue, ok := issueFor(Validate(loadForValidation(t, root)), variant.CodeHarnessCoupling); ok {
+		t.Errorf("substring matches must not fire: %s", issue.Message)
+	}
+}
+
+// TestValidateReportsFileRelativeLineNumbers: a finding in the body must
+// point at its line in SKILL.md, not at its offset below the frontmatter.
+func TestValidateReportsFileRelativeLineNumbers(t *testing.T) {
+	withKnownTargets(t, "claude", "hermes", "codex")
+	root := filepath.Join(t.TempDir(), "numbered")
+	content := `---
+name: numbered
+description: A skill whose coupling sits on a known line of the file.
+category: developer-tools
+---
+
+# Numbered
+
+Always check the hermes queue first.
+`
+	writeFile(t, filepath.Join(root, "SKILL.md"), content)
+
+	// The mention is on line 9 of the file: 5 frontmatter lines, a blank,
+	// the heading, a blank, then the sentence.
+	wantLine := 0
+	for i, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, "hermes queue") {
+			wantLine = i + 1
+			break
+		}
+	}
+	issue, ok := issueFor(Validate(loadForValidation(t, root)), variant.CodeHarnessCoupling)
+	if !ok {
+		t.Fatal("expected a coupling warning")
+	}
+	if !strings.Contains(issue.Message, fmt.Sprintf("line %d:", wantLine)) {
+		t.Errorf("expected line %d in %q", wantLine, issue.Message)
+	}
+}
+
+func TestValidateReportsFileRelativeLineForMarkers(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "marked")
+	content := `---
+name: marked
+description: A skill with an unclosed region below the frontmatter.
+category: developer-tools
+---
+
+<!-- symskills:block worker -->
+Never closed.
+`
+	writeFile(t, filepath.Join(root, "SKILL.md"), content)
+
+	wantLine := 0
+	for i, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, "symskills:block") {
+			wantLine = i + 1
+			break
+		}
+	}
+	issue, ok := issueFor(Validate(loadForValidation(t, root)), variant.CodeBlockUnclosed)
+	if !ok {
+		t.Fatal("expected an unclosed-block error")
+	}
+	if !strings.Contains(issue.Message, fmt.Sprintf("line %d:", wantLine)) {
+		t.Errorf("expected line %d in %q", wantLine, issue.Message)
 	}
 }

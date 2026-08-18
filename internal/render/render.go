@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -77,6 +78,17 @@ type TargetSpec struct {
 	MetadataFile     string
 	MetadataTemplate string
 	Quirks           string
+	// Capabilities declares what this harness runtime offers a skill, as
+	// capability name -> supported. A name absent from the map is
+	// *unknown*, not unsupported: symskills cannot observe a harness
+	// runtime, and refusing a render on a guess would be worse than
+	// rendering with a warning. Users complete the picture for their own
+	// harness builds via [capabilities.<target>] in config.toml.
+	//
+	// The built-in declarations below are deliberately sparse: only
+	// capabilities evidenced by a harness's own documented skill-facing
+	// tooling are declared here.
+	Capabilities map[string]bool
 }
 
 // CustomTargetSpec is the declarative shape for user-defined targets loaded
@@ -90,6 +102,7 @@ type CustomTargetSpec struct {
 	MetadataFile     string
 	MetadataTemplate string
 	OverlayDir       string
+	Capabilities     map[string]bool
 }
 
 // RegisterCustomTargets appends user-defined targets to the registry. It
@@ -135,6 +148,7 @@ func RegisterCustomTargets(specs []CustomTargetSpec) error {
 			OverlayDir:       c.OverlayDir,
 			MetadataFile:     c.MetadataFile,
 			MetadataTemplate: c.MetadataTemplate,
+			Capabilities:     c.Capabilities,
 			Quirks:           "User-defined target from config.toml",
 		})
 	}
@@ -173,6 +187,8 @@ var Targets = []TargetSpec{
 		Name:        TargetClaude,
 		DisplayName: "Claude Code",
 		BinaryName:  "claude",
+		// Claude Code exposes an agent-dispatch tool to skills.
+		Capabilities: map[string]bool{CapSubagents: true},
 		ConfigDir: func(home, project string, scope Scope) string {
 			if scope == ScopeProject && project != "" {
 				return filepath.Join(project, ".claude")
@@ -208,6 +224,8 @@ var Targets = []TargetSpec{
 		Name:        TargetHermes,
 		DisplayName: "Hermes",
 		BinaryName:  "hermes",
+		// Hermes exposes delegate_task to skills.
+		Capabilities: map[string]bool{CapSubagents: true},
 		ConfigDir: func(home, project string, scope Scope) string {
 			if scope == ScopeProject && project != "" {
 				return filepath.Join(project, ".hermes")
@@ -285,6 +303,10 @@ type RenderMeta struct {
 	Source  string
 	Profile string
 	Alias   string // profile alias overrides TargetConfig.Alias
+	// IgnoreCapabilities renders a skill for a target that declares it
+	// lacks a required capability. The result never claims compatibility
+	// with that target, and the reason is reported as a warning.
+	IgnoreCapabilities bool
 }
 
 type Rendered struct {
@@ -302,6 +324,13 @@ type Rendered struct {
 	// content) that differ from the source because of a block override or
 	// a term. Paths absent here travel byte-identical.
 	Files map[string]string `json:"-"`
+	// Warnings carries non-fatal findings about this render: a required
+	// capability the target has not declared, or a requirement overridden
+	// with IgnoreCapabilities.
+	Warnings []string `json:"warnings,omitempty"`
+	// UnmetRequirements lists the required capabilities this target does
+	// not satisfy. Non-empty only on a forced render.
+	UnmetRequirements []CapabilityGap `json:"unmet_requirements,omitempty"`
 }
 
 // VariantReport summarises the harness-specific deltas applied to one target.
@@ -341,26 +370,55 @@ func RenderTarget(bundle *skill.Bundle, target Target, meta ...RenderMeta) (Rend
 		return Rendered{}, fmt.Errorf("target %s is disabled", target)
 	}
 
-	fm := bundle.Frontmatter
-	if fm.Metadata == nil {
-		fm.Metadata = map[string]any{}
+	var opts RenderMeta
+	if len(meta) > 0 {
+		opts = meta[0]
 	}
+	unsupported, unknown, err := checkRequirements(bundle.Manifest.Skill.Requires, target)
+	if err != nil {
+		return Rendered{}, err
+	}
+	if len(unsupported) > 0 && !opts.IgnoreCapabilities {
+		return Rendered{}, fmt.Errorf(
+			"target %s does not support %s required by this skill; disable the target in symskills.toml, or render with --ignore-capabilities to produce output that does not claim compatibility",
+			target, describeGaps(unsupported))
+	}
+	var warnings []string
+	if len(unsupported) > 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"rendered for %s despite unsupported %s; the result does not declare compatibility with this target",
+			target, describeGaps(unsupported)))
+	}
+	if len(unknown) > 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"target %s has not declared %s required by this skill; rendering anyway — record what your harness supports under [capabilities.%s] in config.toml",
+			target, describeGaps(unknown), target))
+	}
+
+	fm := bundle.Frontmatter
 	metadata := map[string]any{}
 	for k, v := range fm.Metadata {
+		// Metadata namespaced under a harness target name belongs to that
+		// target only; shipping metadata.hermes to every other harness was
+		// leaking one target's conventions into all the others.
+		if _, isForeignTarget := LookupSpec(Target(k)); isForeignTarget && k != string(target) {
+			continue
+		}
 		metadata[k] = v
 	}
 	for k, v := range cfg.Metadata {
 		metadata[k] = v
 	}
 	fm.Metadata = metadata
+	// A render only claims compatibility it can stand behind: a forced
+	// render past an unsupported capability declares none.
 	fm.Compatibility = string(target)
-	// Alias precedence: profile alias (RenderMeta) > target config alias > manifest name.
-	var profileAlias string
-	if len(meta) > 0 {
-		profileAlias = meta[0].Alias
+	if len(unsupported) > 0 {
+		fm.Compatibility = ""
 	}
-	if profileAlias != "" {
-		fm.Name = profileAlias
+	// Alias precedence: profile alias (RenderMeta) > target config alias > manifest name.
+	if opts.Alias != "" {
+		fm.Name = opts.Alias
 	} else if cfg.Alias != "" {
 		fm.Name = cfg.Alias
 	} else if bundle.Manifest.Skill.Name != "" {
@@ -388,12 +446,32 @@ func RenderTarget(bundle *skill.Bundle, target Target, meta ...RenderMeta) (Rend
 	if err != nil {
 		return Rendered{}, err
 	}
-	item := Rendered{Target: target, Name: fm.Name, Frontmatter: fm, SkillMD: skillMD, Variants: report, Files: files}
-	if len(meta) > 0 {
-		item.Source = meta[0].Source
-		item.Profile = meta[0].Profile
+	item := Rendered{
+		Target:            target,
+		Name:              fm.Name,
+		Frontmatter:       fm,
+		SkillMD:           skillMD,
+		Variants:          report,
+		Files:             files,
+		Warnings:          warnings,
+		UnmetRequirements: unsupported,
+		Source:            opts.Source,
+		Profile:           opts.Profile,
 	}
 	return item, nil
+}
+
+// describeGaps renders a capability gap list for an error or warning.
+func describeGaps(gaps []CapabilityGap) string {
+	names := make([]string, len(gaps))
+	for i, gap := range gaps {
+		names[i] = strconv.Quote(gap.Capability)
+	}
+	noun := "capability"
+	if len(names) > 1 {
+		noun = "capabilities"
+	}
+	return noun + " " + strings.Join(names, ", ")
 }
 
 // resolveVariants applies the harness-variant constructs for one target to
@@ -410,7 +488,9 @@ func resolveVariants(bundle *skill.Bundle, target Target, composed string) (stri
 	}
 
 	bodyResult, problems := variant.Apply(composed, opts)
-	if err := firstBlockingProblem("SKILL.md", problems); err != nil {
+	// The composed body is SKILL.md plus overlay fragments, so a line
+	// number in it matches no single file; report the finding without one.
+	if err := firstBlockingProblem("composed SKILL.md body", false, problems); err != nil {
 		return "", nil, nil, err
 	}
 
@@ -434,7 +514,7 @@ func resolveVariants(bundle *skill.Bundle, target Target, composed string) (stri
 	for _, path := range paths {
 		source := bundle.Markdown[path]
 		result, problems := variant.Apply(source, opts)
-		if err := firstBlockingProblem(path, problems); err != nil {
+		if err := firstBlockingProblem(path, true, problems); err != nil {
 			return "", nil, nil, err
 		}
 		report.SourceBytes += result.SourceBytes
@@ -463,12 +543,15 @@ func resolveVariants(bundle *skill.Bundle, target Target, composed string) (stri
 // firstBlockingProblem turns the first render-blocking variant problem into
 // an error. Markers inside overlay prepend/append fragments never reach
 // skill.Validate, so this is the guard that catches them.
-func firstBlockingProblem(path string, problems []variant.Problem) error {
+func firstBlockingProblem(path string, withLine bool, problems []variant.Problem) error {
 	for _, problem := range problems {
 		if problem.Severity != variant.SeverityError || !skill.IsRenderBlocking(problem.Code) {
 			continue
 		}
-		return fmt.Errorf("%s: %s", path, problem.String())
+		if withLine {
+			return fmt.Errorf("%s: %s", path, problem.String())
+		}
+		return fmt.Errorf("%s: %s", path, problem.Message)
 	}
 	return nil
 }

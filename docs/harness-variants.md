@@ -140,15 +140,26 @@ the number exists to make that decision visible early.
 A variant mechanism can adapt a skill; it cannot invent a capability the
 harness does not have. When a skill is architecture-bound — Hermes provider
 chains, tier escalation, durable lanes — the honest output for a harness that
-cannot run it is no install at all, not a degraded best-effort. Disable the
-target in `symskills.toml`:
+cannot run it is no install at all, not a degraded best-effort.
+
+Declare what the skill actually needs and let the refusal be automatic:
+
+```toml
+[skill]
+requires = ["subagents"]
+```
+
+or disable the target outright:
 
 ```toml
 [targets.claude]
 enabled = false
 ```
 
-rather than overlaying the skill into something that only looks portable.
+Either beats overlaying a skill into something that only looks portable. See
+[harness-capabilities.md](harness-capabilities.md) for the capability
+vocabulary, the three support states, and the `harness_coupling` warning that
+catches a body which is harness-bound in prose.
 
 ## Validation codes
 
@@ -168,6 +179,7 @@ rather than overlaying the skill into something that only looks portable.
 | `term_unknown` | error | A `{{term:...}}` reference has no `[terms]` entry. |
 | `term_name_invalid` | error | A term name or reference is not lowercase-dash/underscore form. |
 | `term_default_required` | error | A term has no `default` value. |
+| `harness_coupling` | warning | Unscoped text names a registered harness; see [harness-capabilities.md](harness-capabilities.md). |
 
 Every error-severity code above **refuses the render**: the alternative is an
 installed skill that misrepresents its source, which is the failure this

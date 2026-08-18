@@ -167,8 +167,47 @@ of its body is probably two skills; the figure is reported, never enforced.
 
 Blocks and terms are opt-in: a skill that uses neither renders byte-identical
 to before. See [docs/harness-variants.md](docs/harness-variants.md) for the
-full contract, the validation codes, and when to disable a target instead of
-overlaying it.
+full contract and the validation codes.
+
+## Harness Capabilities
+
+Variants let a skill adapt to a harness. They cannot make a harness do
+something it has no mechanism for. A skill that needs harness-managed child
+agents says so:
+
+```toml
+[skill]
+requires = ["subagents"]
+```
+
+and rendering for a target that declares it lacks `subagents` is refused,
+naming the skill, the target and the capability — instead of producing an
+install that passes every check and then refuses itself at use time.
+
+A capability a target has not declared is **unknown**, not absent. `symskills`
+does not observe harness runtimes, so silence is missing information: an
+undeclared capability renders with a warning rather than a refusal. The
+built-in registry is deliberately sparse and you complete it for the harness
+builds you run:
+
+```toml
+# ~/.config/symskills/config.toml
+[capabilities.codex]
+subagents = true
+mcp = false
+```
+
+`symskills targets` shows all three states per harness, and
+`--ignore-capabilities` forces a render past a refusal — with the result
+declaring no `compatibility`, since a forced render does not get to assert one
+the target itself denies.
+
+`symskills validate` additionally reports `harness_coupling` when a body names
+a harness in prose that every target renders. Frontmatter metadata namespaced
+under a harness name (`metadata.hermes`) now travels to that harness only.
+
+See [docs/harness-capabilities.md](docs/harness-capabilities.md) for the
+vocabulary and the full contract.
 
 ## Flow Skills (symbrowse)
 
@@ -242,7 +281,7 @@ alias = "review" # optional target-specific alias
 | `list` | List managed skills (with per-skill metadata; `--sort=name\|changed\|installed\|used`) |
 | `inspect <skill-dir>` | Show parsed SKILL.md + symskills metadata |
 | `validate <skill-dir>` | Validate portable skill metadata and references |
-| `render [skill-dir]` | Render target-specific skill folders (or use `--profile <name>`; `--explain` reports the harness variants each target resolved) |
+| `render [skill-dir]` | Render target-specific skill folders (or use `--profile <name>`; `--explain` reports the harness variants each target resolved, `--ignore-capabilities` forces a refused target) |
 | `diff <skill-dir>` | Compare rendered output with installed target |
 | `history <skill>` | List the versioned commit history of a skill (revision, timestamp, operation, changed files) |
 | `show <skill> --rev <rev>` | Show a skill's state at a past revision (`--diff` adds a diff against the current state) |
@@ -252,7 +291,7 @@ alias = "review" # optional target-specific alias
 | `profile list` | List available context profiles |
 | `profile resolve <profile-name>` | Resolve a profile and print its merged skill set |
 | `profile validate <profile-name>` | Validate a profile's structure and link targets |
-| `targets` | Read-only inventory and readiness status for AI-agent harnesses |
+| `targets` | Read-only inventory and readiness status for AI-agent harnesses, including declared runtime capabilities |
 | `discover [paths...]` | Discover unmanaged skill sources in harness roots or explicit paths |
 | `doctor` | Print config, library, render, and target paths plus per-skill versioning status |
 | `serve --stdio` | Serve MCP tools over stdio |

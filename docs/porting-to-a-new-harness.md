@@ -58,6 +58,18 @@ For differences *inside* the body — a worker-dispatch contract, a report path,
 
 The overlay directory name defaults to the target name, so a new target needs no registration for either mechanism. A user-defined target may point elsewhere with `overlay_dir`.
 
+### 4b. Declare the harness capabilities
+
+Add a `Capabilities` map to the spec for anything the harness runtime offers a skill and that is evidenced by its own documented tooling:
+
+```go
+Capabilities: map[string]bool{
+    render.CapSubagents: true,
+},
+```
+
+Declare only what you can point at. A capability left out of the map is *unknown*, which renders with a warning; declaring `false` refuses the render for skills that require it, so a wrong `false` is worse than silence. Users complete the picture for their own builds via `[capabilities.<target>]` in `config.toml`. See [harness-capabilities.md](harness-capabilities.md).
+
 ### 5. Update install-path verification
 
 `internal/install/install.go` reads from `render.LookupSpec` automatically — no switch or case statement needs editing. Run the golden tests (step 8) to confirm paths match expectations.
