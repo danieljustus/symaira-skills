@@ -9,6 +9,7 @@ import (
 
 	"github.com/danieljustus/symaira-skills/internal/render"
 	"github.com/danieljustus/symaira-skills/internal/skill"
+	"github.com/danieljustus/symaira-skills/internal/vcs"
 )
 
 // writeSkill creates a minimal portable skill directory and returns its root.
@@ -676,5 +677,87 @@ func TestApplyPendingTmpCleanupFailure(t *testing.T) {
 	}
 	if got, rerr := os.ReadFile(filepath.Join(libTarget, "SKILL.md")); rerr != nil || !strings.Contains(string(got), "original") {
 		t.Fatalf("library must be untouched after cleanup failure: %q %v", got, rerr)
+	}
+}
+
+func TestPullSkipsEscapingSymlink(t *testing.T) {
+	home, lib := t.TempDir(), t.TempDir()
+	name := "escape"
+	src := filepath.Join(lib, name)
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSkill(t, src, name, "portable")
+	bundle, err := skill.LoadBundle(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	rendered, errs := render.RenderAll(bundle, out, []render.Target{render.TargetOpenCode})
+	if len(errs) > 0 {
+		t.Fatal(errs[0])
+	}
+	if _, err := Install(RenderedSkill{Target: render.TargetOpenCode, Name: name, Path: rendered[0].Path}, Options{HomeDir: home, Scope: render.ScopeUser, Mode: ModeCopy}); err != nil {
+		t.Fatal(err)
+	}
+	dest, err := InstallPath(render.TargetOpenCode, name, Options{HomeDir: home, Scope: render.ScopeUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(home, "secret.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dest, "references"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dest, "references", "leak.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Pull(PullOptions{HomeDir: home, Scope: render.ScopeUser, LibraryDir: lib, Target: render.TargetOpenCode, Name: name})
+	if err != nil {
+		t.Fatalf("escaping symlink should be skipped, not materialized: %v", err)
+	}
+	if result.StagePath == "" {
+		t.Fatalf("pull must leave a stage tree for the apply pipeline: %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(result.StagePath, "references", "leak.md")); !os.IsNotExist(err) {
+		t.Fatalf("escaping symlink target was materialized into pending tree: %v", err)
+	}
+}
+
+func TestApplyPendingPreservesRepositoryAndCommits(t *testing.T) {
+	opts, result := installAndStage(t, "preserve-repo")
+	target := filepath.Join(opts.LibraryDir, "preserve-repo")
+	if _, err := os.Stat(filepath.Join(result.StagePath, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("pending tree must not contain .git: %v", err)
+	}
+	if _, err := vcs.Init(target); err != nil {
+		t.Fatal(err)
+	}
+	before, err := vcs.Head(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyPending(opts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(target, ".git")); err != nil {
+		t.Fatalf("library repository was not preserved: %v", err)
+	}
+	after, err := vcs.Head(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == after {
+		t.Fatal("applying pending pull must create a forward commit")
+	}
+	history, err := vcs.History(target, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) == 0 || !strings.HasPrefix(history[0].Subject, "pull:") {
+		t.Fatalf("expected pull commit at repository head, got %+v", history)
 	}
 }
