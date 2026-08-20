@@ -1014,5 +1014,10 @@ func ParseTarget(s string) (Target, error) {
 			return Target(s), nil
 		}
 	}
-	return "", fmt.Errorf("unknown target %q", s)
+	valid := make([]string, 0, len(Targets)+1)
+	valid = append(valid, "all")
+	for _, spec := range Targets {
+		valid = append(valid, string(spec.Name))
+	}
+	return "", fmt.Errorf("unknown target %q (valid: %s)", s, strings.Join(valid, ", "))
 }

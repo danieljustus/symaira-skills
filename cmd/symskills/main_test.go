@@ -743,10 +743,10 @@ func TestEventLogInstallUninstallAppendRecords(t *testing.T) {
 	if _, _, err := runCmd(t, home, "import", skillDir); err != nil {
 		t.Fatalf("import failed: %v", err)
 	}
-	if _, _, err := runCmd(t, home, "install", "--mode", "copy", skillDir); err != nil {
+	if _, _, err := runCmd(t, home, "install", "--mode", "copy", "--target", "opencode", skillDir); err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
-	if _, _, err := runCmd(t, home, "uninstall", "log-install"); err != nil {
+	if _, _, err := runCmd(t, home, "uninstall", "--target", "opencode", "log-install"); err != nil {
 		t.Fatalf("uninstall failed: %v", err)
 	}
 

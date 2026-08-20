@@ -34,7 +34,7 @@ func mcpResyncSetup(t *testing.T, manifest string) (Options, install.InstallStat
 		}
 	}
 	opts := Options{HomeDir: home, LibraryDir: lib, RenderDir: t.TempDir()}
-	st := install.InstallStatus{Target: render.TargetOpenCode, Name: "resync-skill", Mode: "copy"}
+	st := install.InstallStatus{Target: render.TargetOpenCode, Name: "resync-skill", Mode: "copy", Status: install.StatusStale}
 	return opts, st
 }
 
@@ -45,7 +45,7 @@ func mcpLogger(t *testing.T) *events.Logger {
 
 func TestResyncStaleMCPBundleMissing(t *testing.T) {
 	opts, _ := mcpResyncSetup(t, "")
-	rows := resyncStaleMCP(opts, []install.InstallStatus{{Target: render.TargetOpenCode, Name: "missing", Mode: "copy"}}, mcpLogger(t))
+	rows := resyncStaleMCP(opts, []install.InstallStatus{{Target: render.TargetOpenCode, Name: "missing", Mode: "copy", Status: install.StatusStale}}, mcpLogger(t))
 	if len(rows) != 1 || rows[0]["action"] != "failed" || rows[0]["error"] == nil {
 		t.Fatalf("expected failed row, got %+v", rows)
 	}
