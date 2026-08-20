@@ -58,6 +58,12 @@ type Options struct {
 	// LogPath is the lifecycle event log location. Empty disables
 	// log-derived fields (last_rendered_at, installs from events).
 	LogPath string
+	// Events, when non-nil, is a pre-read event log grouped by skill name.
+	// It is preferred over LogPath so that callers listing many skills can
+	// read the log once instead of once per skill (see #221). Entries
+	// whose skill key matches Collect's skillName argument are used; the
+	// rest are ignored.
+	Events map[string][]events.Event
 	// InstallOpt locates installed copies for the marker fallback and the
 	// last-used probe. When both HomeDir and ProjectDir are empty the
 	// install scan is skipped entirely, keeping callers that do not know a
@@ -98,7 +104,7 @@ func Collect(root, skillName string, opts Options) Record {
 
 	installs := map[string]Install{} // by target
 	var lastRendered time.Time
-	for _, ev := range readEvents(opts.LogPath, skillName) {
+	for _, ev := range readEvents(opts.LogPath, skillName, opts.Events) {
 		ts, err := time.Parse(time.RFC3339Nano, ev.TS)
 		if err != nil || ev.Outcome != events.OutcomeOK {
 			continue
@@ -182,7 +188,13 @@ func newestMtime(root string) (time.Time, error) {
 
 // readEvents returns the matching records from the lifecycle log, or nil
 // when the log is absent or unreadable. Log failures never fail Collect.
-func readEvents(logPath, skillName string) []events.Event {
+// When opts.Events is populated, it is used instead of reading the file,
+// so that a caller listing many skills reads the log once (see #221).
+func readEvents(logPath, skillName string, preRead map[string][]events.Event) []events.Event {
+	if preRead != nil {
+		recs := preRead[skillName]
+		return recs
+	}
 	if logPath == "" {
 		return nil
 	}
@@ -191,6 +203,26 @@ func readEvents(logPath, skillName string) []events.Event {
 		return nil
 	}
 	return recs
+}
+
+// ReadEventsLog reads the entire lifecycle log once and groups records by
+// skill name. Callers that invoke Collect for many skills should call this
+// once and pass the result via Options.Events to avoid re-reading the log
+// for every skill (see #221). Records with an empty Skill field are
+// included under the empty-string key.
+func ReadEventsLog(logPath string) (map[string][]events.Event, error) {
+	if logPath == "" {
+		return nil, nil
+	}
+	recs, err := events.New(logPath, "").Read(events.Filter{})
+	if err != nil {
+		return nil, err
+	}
+	grouped := make(map[string][]events.Event)
+	for _, ev := range recs {
+		grouped[ev.Skill] = append(grouped[ev.Skill], ev)
+	}
+	return grouped, nil
 }
 
 // collectMarkers scans each registered target's install path for a

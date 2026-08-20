@@ -841,3 +841,19 @@ func fileModTimes(t *testing.T, dir string) map[string]time.Time {
 	}
 	return out
 }
+
+func TestParseTargetErrorListsValidNames(t *testing.T) {
+	_, err := ParseTarget("invalid-target")
+	if err == nil {
+		t.Fatal("expected error for invalid target")
+	}
+	msg := err.Error()
+	for _, name := range []string{"opencode", "claude", "codex", "hermes", "antigravity", "openclaw"} {
+		if !strings.Contains(msg, name) {
+			t.Errorf("error message missing valid name %q: %s", name, msg)
+		}
+	}
+	if !strings.Contains(msg, "all") {
+		t.Errorf("error message should mention 'all' as a special value: %s", msg)
+	}
+}

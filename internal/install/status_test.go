@@ -320,3 +320,91 @@ func mustReadFile(t *testing.T, path string) []byte {
 	}
 	return data
 }
+
+// TestStatusHarnessChangedWithNonDefaultBaseDir verifies that a harness-side
+// edit is classified as harness-changed (not stale) when a non-default
+// BaseDir is used. This is a regression test for #219: the MCP path must
+// thread BaseDir into install.StatusOptions, otherwise the base snapshot
+// lookup misses and the three-way classification degrades to the coarse
+// source-hash comparison that cannot distinguish harness edits from stale.
+func TestStatusHarnessChangedWithNonDefaultBaseDir(t *testing.T) {
+	home := t.TempDir()
+	lib := t.TempDir()
+
+	// Use a non-default base dir, as a user with a custom base_dir config
+	// would have.
+	customBase := filepath.Join(home, ".custom", "base")
+
+	writeLibrarySkill(t, lib, "mcp-base")
+	installFixtureCustomBase(t, home, lib, "mcp-base", []render.Target{render.TargetOpenCode}, ModeCopy, customBase)
+
+	// Harness-side edit: modify the installed copy.
+	dest := filepath.Join(home, ".config", "opencode", "skills", "mcp-base", "SKILL.md")
+	data, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, append(data, []byte("\n# harness edit\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	statuses, err := Status(StatusOptions{
+		HomeDir:    home,
+		Scope:      render.ScopeUser,
+		LibraryDir: lib,
+		BaseDir:    customBase,
+	})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	st := findByTarget(t, statuses, render.TargetOpenCode)
+	if st.Status != StatusHarnessChanged {
+		t.Fatalf("expected harness-changed with non-default BaseDir, got %s (error: %s)", st.Status, st.Error)
+	}
+
+	// Negative control: with the wrong (default) BaseDir, the base snapshot
+	// is not found, and the three-way classification degrades to the coarse
+	// source-hash comparison — which cannot see the harness-side edit and
+	// reports in-sync (the data-loss risk from #219: sync would not flag
+	// the edit, and resync could overwrite it).
+	wrongBase := filepath.Join(home, ".local", "share", "symskills", "base")
+	statusesWrong, err := Status(StatusOptions{
+		HomeDir:    home,
+		Scope:      render.ScopeUser,
+		LibraryDir: lib,
+		BaseDir:    wrongBase,
+	})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	stWrong := findByTarget(t, statusesWrong, render.TargetOpenCode)
+	if stWrong.Status == StatusHarnessChanged {
+		t.Fatalf("expected NOT harness-changed with wrong BaseDir (bug from #219), got harness-changed")
+	}
+}
+
+// installFixtureCustomBase is like installFixture but uses an explicit base
+// directory instead of the default.
+func installFixtureCustomBase(t *testing.T, home, lib, name string, targets []render.Target, mode Mode, baseDir string) {
+	t.Helper()
+	bundle, err := skill.LoadBundle(filepath.Join(lib, name))
+	if err != nil {
+		t.Fatalf("LoadBundle: %v", err)
+	}
+	out := t.TempDir()
+	rendered, errs := render.RenderAll(bundle, out, targets)
+	if len(errs) > 0 {
+		t.Fatalf("render: %v", errs[0])
+	}
+	for _, item := range rendered {
+		if _, err := Install(RenderedSkill{Target: item.Target, Name: item.Name, Path: item.Path}, Options{
+			HomeDir:         home,
+			Scope:           render.ScopeUser,
+			Mode:            mode,
+			BaseDir:         baseDir,
+			AllowExecutable: false,
+		}); err != nil {
+			t.Fatalf("install %s/%s: %v", item.Target, item.Name, err)
+		}
+	}
+}

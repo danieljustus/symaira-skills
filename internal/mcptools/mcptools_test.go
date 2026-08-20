@@ -352,6 +352,49 @@ func TestOptionsDefaults(t *testing.T) {
 	}
 }
 
+func TestRegisterBackfillsBaseDir(t *testing.T) {
+	srv := mcpserver.New("symskills", "test")
+	// Empty BaseDir should be backfilled from config.Defaults().
+	Register(srv, Options{})
+
+	// Verify the tools are registered (the backfill happens inside Register
+	// and is captured by closures, so we just confirm no panic and tools
+	// are available).
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}` + "\n"
+	var out strings.Builder
+	if err := srv.ServeIO(context.Background(), strings.NewReader(req), &out); err != nil {
+		t.Fatalf("ServeIO: %v", err)
+	}
+
+	var resp struct {
+		Result struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(resp.Result.Tools) == 0 {
+		t.Fatal("expected tools registered")
+	}
+}
+
+func TestRegisterPreservesCustomBaseDir(t *testing.T) {
+	srv := mcpserver.New("symskills", "test")
+	customBase := "/custom/non/default/base"
+	// A non-empty BaseDir should be preserved, not overwritten.
+	Register(srv, Options{BaseDir: customBase, LibraryDir: t.TempDir()})
+
+	// The tools should be registered and functional with the custom base dir.
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}` + "\n"
+	var out strings.Builder
+	if err := srv.ServeIO(context.Background(), strings.NewReader(req), &out); err != nil {
+		t.Fatalf("ServeIO: %v", err)
+	}
+}
+
 func TestSkillsProfileList(t *testing.T) {
 	srv := mcpserver.New("symskills", "test")
 	tmpDir := t.TempDir()

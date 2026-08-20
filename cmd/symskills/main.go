@@ -320,8 +320,14 @@ func newListCmd() *cobra.Command {
 			if issues == nil {
 				issues = []skill.Issue{}
 			}
+			logPath := events.DefaultPath()
+			preRead, perr := metadata.ReadEventsLog(logPath)
+			if perr != nil {
+				preRead = nil // degrade gracefully — same as missing log
+			}
 			metaOpts := metadata.Options{
-				LogPath:    events.DefaultPath(),
+				LogPath:    logPath,
+				Events:     preRead,
 				InstallOpt: install.Options{HomeDir: userHomeDir(), Scope: render.ScopeUser},
 			}
 			items := make([]listItem, 0, len(bundles))
@@ -819,9 +825,9 @@ func newDiffCmd() *cobra.Command {
 		Short: "Compare rendered skill output with the installed target path",
 		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := render.ParseTarget(targetName)
+			targets, err := targetsFromFlag(targetName)
 			if err != nil {
-				return err
+				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "parse target")
 			}
 			cfg, err := config.Load()
 			if err != nil {
@@ -839,27 +845,34 @@ func newDiffCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rendered, cleanup, err := render.StagingRender(bundle, []render.Target{target})
-			defer cleanup()
-			if err != nil {
-				return exitcodes.Wrap(err, exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
-			}
-			installedPath, err := install.InstallPath(target, rendered[0].Name, install.Options{Scope: render.ScopeUser})
-			if err != nil {
-				return err
-			}
-			changes, err := install.Diff(rendered[0].Path, installedPath, install.Options{Scope: render.ScopeUser, Target: target, BaseDir: cfg.BaseDir})
-			if err != nil {
-				return err
+			var allChanges = []install.Change{}
+			for _, target := range targets {
+				renderOpts := install.Options{Scope: render.ScopeUser, Target: target, BaseDir: cfg.BaseDir}
+				rendered, cleanup, err := render.StagingRender(bundle, []render.Target{target})
+				if err != nil {
+					cleanup()
+					return exitcodes.Wrap(err, exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
+				}
+				installedPath, err := install.InstallPath(target, rendered[0].Name, renderOpts)
+				if err != nil {
+					cleanup()
+					return err
+				}
+				changes, err := install.Diff(rendered[0].Path, installedPath, renderOpts)
+				cleanup()
+				if err != nil {
+					return err
+				}
+				allChanges = append(allChanges, changes...)
 			}
 			if jsonOut {
-				return printJSON(cmd, changes)
+				return printJSON(cmd, allChanges)
 			}
-			if len(changes) == 0 {
+			if len(allChanges) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No changes detected.")
 				return nil
 			}
-			for _, change := range changes {
+			for _, change := range allChanges {
 				fmt.Fprintf(cmd.OutOrStdout(), "%s	%s\n", change.Status, change.Path)
 				// #110: modified files carry a unified content diff so the
 				// output shows what actually changed, not just a badge.
@@ -873,7 +886,7 @@ func newDiffCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&targetName, "target", string(render.TargetOpenCode), "Target harness")
+	cmd.Flags().StringVar(&targetName, "target", "all", "Target harness: all, opencode, claude, codex, hermes, antigravity, openclaw (comma-separated)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	return cmd
 }
@@ -886,9 +899,9 @@ func newInstallCmd() *cobra.Command {
 		Short: "Render and install a skill or profile into a supported harness",
 		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := render.ParseTarget(targetName)
+			targets, err := targetsFromFlag(targetName)
 			if err != nil {
-				return err
+				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "parse target")
 			}
 			cfg, err := config.Load()
 			if err != nil {
@@ -903,7 +916,42 @@ func newInstallCmd() *cobra.Command {
 				if len(args) > 0 {
 					return exitcodes.Wrap(fmt.Errorf("skill-dir is not used with --profile"), exitcodes.ExitConfig, exitcodes.KindValidation, "install profile")
 				}
-				return installProfile(cmd, cfg, out, target, profileName, opts, jsonOut)
+				logger := newEventLogger()
+				for _, target := range targets {
+					results, issues, err := profile.InstallProfile(cfg.LibraryDir, cfg.ProfilesDir, ".", out, target, profileName, opts)
+					if err != nil {
+						logger.Record(events.Event{Event: events.EventProfileInstall, Target: string(target), Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
+						return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "install profile")
+					}
+					if len(issues) > 0 {
+						for _, issue := range issues {
+							fmt.Fprintf(cmd.ErrOrStderr(), "%s	%s	%s\n", issue.Severity, issue.Code, issue.Message)
+						}
+						return exitcodes.Wrap(fmt.Errorf("profile has unresolved issues"), exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
+					}
+					if len(results) == 0 {
+						if jsonOut {
+							return printJSON(cmd, []install.Result{})
+						}
+						fmt.Fprintln(cmd.OutOrStdout(), "No skills in profile")
+						return nil
+					}
+					if !opts.DryRun {
+						for _, result := range results {
+							logger.Record(events.Event{Event: events.EventProfileInstall, Skill: result.Name, Target: string(result.Target), Scope: string(opts.Scope), Mode: string(result.Mode), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
+						}
+					}
+					if jsonOut {
+						return printJSON(cmd, results)
+					}
+					for _, result := range results {
+						fmt.Fprintf(cmd.OutOrStdout(), "%s %s at %s\n", result.Action, result.Name, result.Path)
+						if result.BackupPath != "" {
+							fmt.Fprintf(cmd.OutOrStdout(), "previous unmanaged skill moved to %s\n", result.BackupPath)
+						}
+					}
+				}
+				return nil
 			}
 			dir, err := resolveSkillDir(args, "skill-dir is required without --profile", cfg.LibraryDir)
 			if err != nil {
@@ -916,43 +964,50 @@ func newInstallCmd() *cobra.Command {
 			// The manifest may opt a skill into preserving executables
 			// ([skill] allow_executable = true in symskills.toml).
 			opts.AllowExecutable = opts.AllowExecutable || bundle.Manifest.Skill.AllowExecutable
-			rendered, errs := render.RenderAll(bundle, out, []render.Target{target}, render.RenderMeta{IgnoreCapabilities: ignoreCapabilities})
+			rendered, errs := render.RenderAll(bundle, out, targets, render.RenderMeta{IgnoreCapabilities: ignoreCapabilities})
 			printRenderWarnings(cmd, rendered)
 			if len(rendered) == 0 {
 				if len(errs) > 0 {
-					newEventLogger().Record(events.Event{Event: events.EventInstall, Skill: bundle.Frontmatter.Name, Target: string(target), Outcome: events.OutcomeError, Error: errs[0].Error(), Actor: events.ActorCLI})
+					newEventLogger().Record(events.Event{Event: events.EventInstall, Skill: bundle.Frontmatter.Name, Target: targetName, Outcome: events.OutcomeError, Error: errs[0].Error(), Actor: events.ActorCLI})
 					return exitcodes.Wrap(errs[0], exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
 				}
-				return exitcodes.Wrap(fmt.Errorf("target %s produced no render output", target), exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
+				return exitcodes.Wrap(fmt.Errorf("target %s produced no render output", targetName), exitcodes.ExitSoftware, exitcodes.KindInternal, "render target")
 			}
-			lock, err := install.AcquirePullLock(target, rendered[0].Name, install.PullOptions{HomeDir: userHomeDir()})
-			if err != nil {
-				return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "lock skill")
-			}
-			defer lock.Release()
-			result, err := install.Install(install.RenderedSkill{Target: target, Name: rendered[0].Name, Path: rendered[0].Path}, opts)
 			logger := newEventLogger()
-			if err != nil {
-				logger.Record(events.Event{Event: events.EventInstall, Skill: rendered[0].Name, Target: string(target), Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
-				return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "install skill")
+			installs := make([]install.RenderedSkill, len(rendered))
+			for i, r := range rendered {
+				installs[i] = install.RenderedSkill{Target: r.Target, Name: r.Name, Path: r.Path}
 			}
-			if !dryRun {
-				logger.Record(events.Event{Event: events.EventInstall, Skill: result.Name, SkillVersion: bundle.Frontmatter.Version, Target: string(target), Scope: string(opts.Scope), Mode: string(result.Mode), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
-			}
-			if jsonOut {
-				return printJSON(cmd, result)
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s %s at %s\n", result.Action, result.Name, result.Path)
-			if result.BackupPath != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "previous unmanaged skill moved to %s\n", result.BackupPath)
-			}
-			for _, change := range result.ModeChanges {
-				fmt.Fprintf(cmd.OutOrStdout(), "stripped executable bit from %s (%s -> %s; use --allow-executable to preserve)\n", change.Path, change.From, change.To)
+			for _, item := range installs {
+				renderTarget := item.Target
+				lock, err := install.AcquirePullLock(renderTarget, item.Name, install.PullOptions{HomeDir: userHomeDir()})
+				if err != nil {
+					return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "lock skill")
+				}
+				result, err := install.Install(item, opts)
+				_ = lock.Release()
+				if err != nil {
+					logger.Record(events.Event{Event: events.EventInstall, Skill: item.Name, Target: string(renderTarget), Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
+					return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "install skill")
+				}
+				if !dryRun {
+					logger.Record(events.Event{Event: events.EventInstall, Skill: result.Name, SkillVersion: bundle.Frontmatter.Version, Target: string(renderTarget), Scope: string(opts.Scope), Mode: string(result.Mode), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
+				}
+				if jsonOut {
+					return printJSON(cmd, result)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s %s at %s\n", result.Action, result.Name, result.Path)
+				if result.BackupPath != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "previous unmanaged skill moved to %s\n", result.BackupPath)
+				}
+				for _, change := range result.ModeChanges {
+					fmt.Fprintf(cmd.OutOrStdout(), "stripped executable bit from %s (%s -> %s; use --allow-executable to preserve)\n", change.Path, change.From, change.To)
+				}
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&targetName, "target", string(render.TargetOpenCode), "Target harness")
+	cmd.Flags().StringVar(&targetName, "target", "all", "Target harness: all, opencode, claude, codex, hermes, antigravity, openclaw (comma-separated)")
 	cmd.Flags().StringVar(&scopeName, "scope", string(render.ScopeUser), "Install scope: user or project")
 	cmd.Flags().StringVar(&modeName, "mode", string(install.ModeSymlink), "Install mode: symlink or copy")
 	cmd.Flags().BoolVar(&force, "force", false, "Adopt an unmanaged skill at the target path, moving the existing one to a backup directory")
@@ -977,7 +1032,7 @@ keys are refused rather than merged. Use --dry-run to print the complete plan
 without writing a pending tree.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := render.ParseTarget(targetName)
+			targets, err := targetsFromFlag(targetName)
 			if err != nil {
 				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "parse target")
 			}
@@ -985,93 +1040,67 @@ without writing a pending tree.`,
 			if err != nil {
 				return err
 			}
-			pullOpts := install.PullOptions{HomeDir: userHomeDir(), Scope: render.Scope(scopeName), LibraryDir: cfg.LibraryDir, BaseDir: cfg.BaseDir, Target: target, Name: args[0], DryRun: dryRun}
+			baseOpts := install.PullOptions{HomeDir: userHomeDir(), Scope: render.Scope(scopeName), LibraryDir: cfg.LibraryDir, BaseDir: cfg.BaseDir, Name: args[0], DryRun: dryRun}
 			if apply {
-				if err := install.ApplyPending(pullOpts); err != nil {
-					return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "apply pending pull")
+				for _, target := range targets {
+					pullOpts := baseOpts
+					pullOpts.Target = target
+					if err := install.ApplyPending(pullOpts); err != nil {
+						if strings.Contains(err.Error(), "no pending pull") {
+							continue
+						}
+						return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "apply pending pull")
+					}
+					if jsonOut {
+						return printJSON(cmd, install.PullResult{Action: "applied", Target: target, Name: args[0]})
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "applied %s %s\n", target, args[0])
 				}
-				if jsonOut {
-					return printJSON(cmd, install.PullResult{Action: "applied", Target: target, Name: args[0]})
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "applied %s %s\n", target, args[0])
 				return nil
 			}
-			result, err := install.Pull(pullOpts)
-			if err != nil {
-				if len(result.Refusals) > 0 {
-					for _, refusal := range result.Refusals {
-						fmt.Fprintf(cmd.ErrOrStderr(), "refused: %s\\n", refusal)
+			for _, target := range targets {
+				pullOpts := baseOpts
+				pullOpts.Target = target
+				result, err := install.Pull(pullOpts)
+				if err != nil {
+					if strings.Contains(err.Error(), "installed skill not found") {
+						// Skip targets where the skill isn't installed (e.g.
+						// --target all only has it on some harnesses).
+						continue
+					}
+					if len(result.Refusals) > 0 {
+						for _, refusal := range result.Refusals {
+							fmt.Fprintf(cmd.ErrOrStderr(), "refused: %s\n", refusal)
+						}
+					}
+					return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "pull")
+				}
+				if jsonOut {
+					return printJSON(cmd, result)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", result.Action, result.Name)
+				for _, change := range result.Changes {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\n", change.Status, change.Path)
+				}
+				if len(result.FrontmatterChanges) > 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "Frontmatter changes:")
+					for _, change := range result.FrontmatterChanges {
+						fmt.Fprintf(cmd.OutOrStdout(), "  %s (%s)\n", change.Key, change.Reason)
 					}
 				}
-				return exitcodes.Wrap(err, exitcodes.ExitData, exitcodes.KindValidation, "pull")
-			}
-			if jsonOut {
-				return printJSON(cmd, result)
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s %s\\n", result.Action, result.Name)
-			for _, change := range result.Changes {
-				fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\\n", change.Status, change.Path)
-			}
-			if len(result.FrontmatterChanges) > 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "Frontmatter changes:")
-				for _, change := range result.FrontmatterChanges {
-					fmt.Fprintf(cmd.OutOrStdout(), "  %s (%s)\\n", change.Key, change.Reason)
+				if result.StagePath != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "pending: %s\n", result.StagePath)
 				}
-			}
-			if result.StagePath != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "pending: %s\\n", result.StagePath)
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&targetName, "target", string(render.TargetOpenCode), "Target harness")
+	cmd.Flags().StringVar(&targetName, "target", "all", "Target harness: all, opencode, claude, codex, hermes, antigravity, openclaw (comma-separated)")
 	cmd.Flags().StringVar(&scopeName, "scope", string(render.ScopeUser), "Install scope: user or project")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the pull plan without writing")
 	cmd.Flags().BoolVar(&apply, "apply", false, "Promote an existing pending pull into the library")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	return cmd
-}
-
-func installProfile(cmd *cobra.Command, cfg *config.Config, output string, target render.Target, profileName string, opts install.Options, jsonOut bool) error {
-	results, issues, err := profile.InstallProfile(cfg.LibraryDir, cfg.ProfilesDir, ".", output, target, profileName, opts)
-	logger := newEventLogger()
-	if err != nil {
-		logger.Record(events.Event{Event: events.EventProfileInstall, Target: string(target), Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
-		return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "install profile")
-	}
-	if len(issues) > 0 {
-		for _, issue := range issues {
-			fmt.Fprintf(cmd.ErrOrStderr(), "%s	%s	%s\n", issue.Severity, issue.Code, issue.Message)
-		}
-		messages := make([]string, 0, len(issues))
-		for _, issue := range issues {
-			messages = append(messages, issue.Message)
-		}
-		logger.Record(events.Event{Event: events.EventProfileInstall, Target: string(target), Outcome: events.OutcomeError, Error: strings.Join(messages, "; "), Actor: events.ActorCLI})
-		return exitcodes.Wrap(fmt.Errorf("profile has unresolved issues"), exitcodes.ExitData, exitcodes.KindValidation, "resolve profile")
-	}
-	if len(results) == 0 {
-		if jsonOut {
-			return printJSON(cmd, []install.Result{})
-		}
-		fmt.Fprintln(cmd.OutOrStdout(), "No skills in profile")
-		return nil
-	}
-	if !opts.DryRun {
-		for _, result := range results {
-			logger.Record(events.Event{Event: events.EventProfileInstall, Skill: result.Name, Target: string(result.Target), Scope: string(opts.Scope), Mode: string(result.Mode), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
-		}
-	}
-	if jsonOut {
-		return printJSON(cmd, results)
-	}
-	for _, result := range results {
-		fmt.Fprintf(cmd.OutOrStdout(), "%s %s at %s\n", result.Action, result.Name, result.Path)
-		if result.BackupPath != "" {
-			fmt.Fprintf(cmd.OutOrStdout(), "previous unmanaged skill moved to %s\n", result.BackupPath)
-		}
-	}
-	return nil
 }
 
 func newUninstallCmd() *cobra.Command {
@@ -1082,39 +1111,41 @@ func newUninstallCmd() *cobra.Command {
 		Short: "Remove a managed installed skill",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := render.ParseTarget(targetName)
+			targets, err := targetsFromFlag(targetName)
 			if err != nil {
-				return err
+				return exitcodes.Wrap(err, exitcodes.ExitConfig, exitcodes.KindValidation, "parse target")
 			}
 			cfg, err := config.Load()
 			if err != nil {
 				return err
 			}
 			opts := install.Options{Scope: render.Scope(scopeName), BaseDir: cfg.BaseDir}
-			removed, err := install.Uninstall(target, args[0], opts)
 			logger := newEventLogger()
-			path, _ := install.InstallPath(target, args[0], opts)
-			if err != nil {
-				logger.Record(events.Event{Event: events.EventUninstall, Skill: args[0], Target: string(target), Scope: string(opts.Scope), Path: path, Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
-				return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "uninstall skill")
+			for _, target := range targets {
+				removed, err := install.Uninstall(target, args[0], opts)
+				path, _ := install.InstallPath(target, args[0], opts)
+				if err != nil {
+					logger.Record(events.Event{Event: events.EventUninstall, Skill: args[0], Target: string(target), Scope: string(opts.Scope), Path: path, Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
+					return exitcodes.Wrap(err, exitcodes.ExitConflict, exitcodes.KindConflict, "uninstall skill")
+				}
+				logger.Record(events.Event{Event: events.EventUninstall, Skill: args[0], Target: string(target), Scope: string(opts.Scope), Path: path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
+				if jsonOut {
+					return printJSON(cmd, map[string]any{
+						"name":    args[0],
+						"target":  string(target),
+						"removed": removed,
+					})
+				}
+				if !removed {
+					fmt.Fprintf(cmd.OutOrStdout(), "%s was not installed for %s\n", args[0], target)
+					return nil
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Uninstalled %s from %s\n", args[0], target)
 			}
-			logger.Record(events.Event{Event: events.EventUninstall, Skill: args[0], Target: string(target), Scope: string(opts.Scope), Path: path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
-			if jsonOut {
-				return printJSON(cmd, map[string]any{
-					"name":    args[0],
-					"target":  string(target),
-					"removed": removed,
-				})
-			}
-			if !removed {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s was not installed for %s\n", args[0], target)
-				return nil
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Uninstalled %s from %s\n", args[0], target)
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&targetName, "target", string(render.TargetOpenCode), "Target harness")
+	cmd.Flags().StringVar(&targetName, "target", "all", "Target harness: all, opencode, claude, codex, hermes, antigravity, openclaw (comma-separated)")
 	cmd.Flags().StringVar(&scopeName, "scope", string(render.ScopeUser), "Install scope: user or project")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON")
 	return cmd
@@ -1216,15 +1247,8 @@ can gate on drift.`,
 	return cmd
 }
 
-// syncResult is one row of `symskills sync` output.
-type syncResult struct {
-	Target render.Target `json:"target"`
-	Name   string        `json:"name"`
-	Path   string        `json:"path"`
-	Action string        `json:"action"` // planned | installed | current | skipped | failed
-	Mode   install.Mode  `json:"mode,omitempty"`
-	Error  string        `json:"error,omitempty"`
-}
+// syncResult aliases install.SyncResult for CLI output compatibility.
+type syncResult = install.SyncResult
 
 func newSyncCmd() *cobra.Command {
 	var targetName, scopeName, profileName, conflictPolicy string
@@ -1286,12 +1310,7 @@ The three-way classification (#126) guards the write path:
 			// Default policy: a conflict aborts the run before anything
 			// is written, with a report naming target, skill and file.
 			if policy == install.ConflictAbort {
-				var conflicted []install.InstallStatus
-				for _, st := range statuses {
-					if st.Status == install.StatusConflict {
-						conflicted = append(conflicted, st)
-					}
-				}
+				conflicted := install.CollectConflicts(statuses)
 				if len(conflicted) > 0 {
 					for _, st := range conflicted {
 						fmt.Fprintf(cmd.ErrOrStderr(), "conflict: %s/%s: %s\n", st.Target, st.Name, st.Error)
@@ -1305,76 +1324,29 @@ The three-way classification (#126) guards the write path:
 				}
 			}
 			logger := newEventLogger()
-			results := []syncResult{}
-			for _, st := range statuses {
-				if st.Status == install.StatusHarnessChanged {
-					// A harness-side edit would be destroyed by a
-					// reinstall; it is never repaired silently.
-					fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s/%s: harness changed; run 'symskills pull' to carry the edit back into the library\n", st.Target, st.Name)
-					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "skipped", Error: "harness changed; use symskills pull"})
-					continue
+			syncOpts := install.SyncOptions{
+				LibraryDir:     cfg.LibraryDir,
+				RenderDir:      cfg.RenderDir,
+				BaseDir:        cfg.BaseDir,
+				Scope:          render.Scope(scopeName),
+				ConflictPolicy: policy,
+				DryRun:         dryRun,
+				HomeDir:        userHomeDir(),
+			}
+			results := install.Sync(statuses, syncOpts)
+			for _, r := range results {
+				if r.Action == "skipped" && r.Error == "harness changed; use symskills pull" {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s/%s: harness changed; run 'symskills pull' to carry the edit back into the library\n", r.Target, r.Name)
 				}
-				if st.Status == install.StatusConflict {
-					// Non-abort policies. prefer-source falls through to
-					// the stale reinstall path; prefer-target and manual
-					// keep the harness side untouched.
-					if policy != install.ConflictPreferSource {
-						fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s/%s: conflict left for resolution; library not forced over the harness edit\n", st.Target, st.Name)
-						results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "skipped", Error: "conflict; resolve manually"})
-						continue
-					}
+				if r.Action == "skipped" && r.Error != "" && r.Error != "harness changed; use symskills pull" {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping %s/%s: %s\n", r.Target, r.Name, r.Error)
 				}
-				// Reinstall candidates: plain stale installs (the #115
-				// push case) plus conflicts under prefer-source.
-				if st.Status != install.StatusStale && st.Status != install.StatusConflict {
-					continue
+				if r.Action == "installed" {
+					logger.Record(events.Event{Event: events.EventInstall, Skill: r.Name, Target: string(r.Target), Scope: string(syncOpts.Scope), Mode: string(r.Mode), Path: r.Path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
 				}
-				// The conflict summary error is the report, not a reason
-				// to skip: prefer-source resolves the conflict by design.
-				if st.Error != "" && st.Status != install.StatusConflict {
-					fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping %s/%s: %s\n", st.Target, st.Name, st.Error)
-					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "skipped", Error: st.Error})
-					continue
+				if r.Action == "failed" {
+					logger.Record(events.Event{Event: events.EventInstall, Skill: r.Name, Target: string(r.Target), Outcome: events.OutcomeError, Error: r.Error, Actor: events.ActorCLI})
 				}
-				if dryRun {
-					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "planned", Mode: st.Mode})
-					continue
-				}
-				bundle, err := skill.LoadBundle(filepath.Join(cfg.LibraryDir, st.Name))
-				if err != nil {
-					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "failed", Error: err.Error()})
-					continue
-				}
-				opts := install.Options{
-					Scope:           render.Scope(scopeName),
-					Mode:            st.Mode,
-					BaseDir:         cfg.BaseDir,
-					AllowExecutable: bundle.Manifest.Skill.AllowExecutable,
-				}
-				rendered, errs := render.RenderAll(bundle, cfg.RenderDir, []render.Target{st.Target})
-				if len(rendered) == 0 {
-					msg := fmt.Sprintf("target %s produced no render output", st.Target)
-					if len(errs) > 0 {
-						msg = errs[0].Error()
-					}
-					logger.Record(events.Event{Event: events.EventInstall, Skill: st.Name, Target: string(st.Target), Scope: string(opts.Scope), Outcome: events.OutcomeError, Error: msg, Actor: events.ActorCLI})
-					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "failed", Error: msg})
-					continue
-				}
-				lock, lockErr := install.AcquirePullLock(st.Target, rendered[0].Name, install.PullOptions{HomeDir: userHomeDir()})
-				if lockErr != nil {
-					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "skipped", Error: lockErr.Error()})
-					continue
-				}
-				result, err := install.Install(install.RenderedSkill{Target: st.Target, Name: rendered[0].Name, Path: rendered[0].Path}, opts)
-				_ = lock.Release()
-				if err != nil {
-					logger.Record(events.Event{Event: events.EventInstall, Skill: st.Name, Target: string(st.Target), Scope: string(opts.Scope), Outcome: events.OutcomeError, Error: err.Error(), Actor: events.ActorCLI})
-					results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: st.Path, Action: "failed", Error: err.Error()})
-					continue
-				}
-				logger.Record(events.Event{Event: events.EventInstall, Skill: result.Name, SkillVersion: bundle.Frontmatter.Version, Target: string(st.Target), Scope: string(opts.Scope), Mode: string(result.Mode), Path: result.Path, Outcome: events.OutcomeOK, Actor: events.ActorCLI})
-				results = append(results, syncResult{Target: st.Target, Name: st.Name, Path: result.Path, Action: result.Action, Mode: result.Mode})
 			}
 			if jsonOut {
 				return printJSON(cmd, map[string]any{"results": results})
@@ -1633,7 +1605,7 @@ func newServeCmd(version string) *cobra.Command {
 			// through slog to stderr. The operation log is a file whose
 			// location is passed explicitly.
 			enabled := cfg.VCSEnabled()
-			return mcptools.Serve(version, mcptools.Options{LibraryDir: cfg.LibraryDir, RenderDir: cfg.RenderDir, ProfilesDir: cfg.ProfilesDir, HomeDir: userHomeDir(), EventsPath: events.DefaultPath(), Version: version, VCSEnabled: &enabled})
+			return mcptools.Serve(version, mcptools.Options{LibraryDir: cfg.LibraryDir, RenderDir: cfg.RenderDir, ProfilesDir: cfg.ProfilesDir, HomeDir: userHomeDir(), BaseDir: cfg.BaseDir, CacheDir: cfg.CacheDir, EventsPath: events.DefaultPath(), Version: version, VCSEnabled: &enabled})
 		},
 	}
 	// stdio is the only transport, so it is always enabled. The flag is
