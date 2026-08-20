@@ -12,6 +12,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
 
+	"github.com/danieljustus/symaira-skills/internal/fsutil"
 	"github.com/danieljustus/symaira-skills/internal/render"
 	"github.com/danieljustus/symaira-skills/internal/skill"
 )
@@ -487,7 +488,9 @@ func stagePullTree(stage, library, installed string, fm map[string]any, body str
 	if err := os.RemoveAll(stage); err != nil {
 		return err
 	}
-	if err := copyTreePreserve(library, stage, func(rel string) bool { return rel == pullManifestFile }); err != nil {
+	if err := fsutil.CopyTree(library, stage, func(rel string, d os.DirEntry) bool {
+		return rel == pullManifestFile
+	}); err != nil {
 		return err
 	}
 	fmData, err := yaml.Marshal(fm)
@@ -512,7 +515,11 @@ func stagePullTree(stage, library, installed string, fm map[string]any, body str
 			}
 			continue
 		}
-		if err := copyFilePreserve(src, dst); err != nil {
+		info, err := os.Stat(src)
+		if err != nil {
+			return err
+		}
+		if err := fsutil.CopyFile(src, dst, info.Mode().Perm()); err != nil {
 			return err
 		}
 	}
@@ -546,50 +553,6 @@ func unionPaths(maps ...map[string]string) []string {
 	return out
 }
 
-func copyTreePreserve(src, dst string, skip func(string) bool) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return os.MkdirAll(dst, info.Mode().Perm())
-		}
-		if skip != nil && skip(filepath.ToSlash(rel)) {
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		target := filepath.Join(dst, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, info.Mode().Perm())
-		}
-		return copyFilePreserve(path, target)
-	})
-}
-
-func copyFilePreserve(src, dst string) error {
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(dst, data, info.Mode().Perm()); err != nil {
-		return err
-	}
-	return os.Chmod(dst, info.Mode().Perm())
-}
-
 // ApplyPending promotes a previously staged pull into the library. It never
 // installs to a harness target.
 func ApplyPending(opts PullOptions) error {
@@ -614,7 +577,9 @@ func ApplyPending(opts PullOptions) error {
 		return err
 	}
 	defer os.RemoveAll(tmp)
-	if err := copyTreePreserve(stage, tmp, func(rel string) bool { return rel == pullManifestFile }); err != nil {
+	if err := fsutil.CopyTree(stage, tmp, func(rel string, d os.DirEntry) bool {
+		return rel == pullManifestFile
+	}); err != nil {
 		return err
 	}
 	bak := target + ".pull-bak-" + fmt.Sprint(os.Getpid())

@@ -678,3 +678,50 @@ func TestApplyPendingTmpCleanupFailure(t *testing.T) {
 		t.Fatalf("library must be untouched after cleanup failure: %q %v", got, rerr)
 	}
 }
+
+func TestPullSkipsEscapingSymlink(t *testing.T) {
+	home, lib := t.TempDir(), t.TempDir()
+	name := "escape"
+	src := filepath.Join(lib, name)
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSkill(t, src, name, "portable")
+	bundle, err := skill.LoadBundle(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	rendered, errs := render.RenderAll(bundle, out, []render.Target{render.TargetOpenCode})
+	if len(errs) > 0 {
+		t.Fatal(errs[0])
+	}
+	if _, err := Install(RenderedSkill{Target: render.TargetOpenCode, Name: name, Path: rendered[0].Path}, Options{HomeDir: home, Scope: render.ScopeUser, Mode: ModeCopy}); err != nil {
+		t.Fatal(err)
+	}
+	dest, err := InstallPath(render.TargetOpenCode, name, Options{HomeDir: home, Scope: render.ScopeUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(home, "secret.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dest, "references"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dest, "references", "leak.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Pull(PullOptions{HomeDir: home, Scope: render.ScopeUser, LibraryDir: lib, Target: render.TargetOpenCode, Name: name})
+	if err != nil {
+		t.Fatalf("escaping symlink should be skipped, not materialized: %v", err)
+	}
+	if result.StagePath == "" {
+		t.Fatalf("pull must leave a stage tree for the apply pipeline: %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(result.StagePath, "references", "leak.md")); !os.IsNotExist(err) {
+		t.Fatalf("escaping symlink target was materialized into pending tree: %v", err)
+	}
+}
