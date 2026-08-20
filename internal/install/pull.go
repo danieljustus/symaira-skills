@@ -15,6 +15,7 @@ import (
 	"github.com/danieljustus/symaira-skills/internal/fsutil"
 	"github.com/danieljustus/symaira-skills/internal/render"
 	"github.com/danieljustus/symaira-skills/internal/skill"
+	"github.com/danieljustus/symaira-skills/internal/vcs"
 )
 
 const (
@@ -489,7 +490,7 @@ func stagePullTree(stage, library, installed string, fm map[string]any, body str
 		return err
 	}
 	if err := fsutil.CopyTree(library, stage, func(rel string, d os.DirEntry) bool {
-		return rel == pullManifestFile
+		return rel == pullManifestFile || (d.Name() == ".git" && d.IsDir())
 	}); err != nil {
 		return err
 	}
@@ -578,19 +579,35 @@ func ApplyPending(opts PullOptions) error {
 	}
 	defer os.RemoveAll(tmp)
 	if err := fsutil.CopyTree(stage, tmp, func(rel string, d os.DirEntry) bool {
-		return rel == pullManifestFile
+		return rel == pullManifestFile || (d.Name() == ".git" && d.IsDir())
 	}); err != nil {
 		return err
 	}
-	bak := target + ".pull-bak-" + fmt.Sprint(os.Getpid())
-	_ = os.RemoveAll(bak)
-	if err := os.Rename(target, bak); err != nil {
+	entries, err := os.ReadDir(target)
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, target); err != nil {
-		_ = os.Rename(bak, target)
+	for _, entry := range entries {
+		if entry.Name() == ".git" {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(target, entry.Name())); err != nil {
+			return err
+		}
+	}
+	tmpEntries, err := os.ReadDir(tmp)
+	if err != nil {
 		return err
 	}
-	_ = os.RemoveAll(bak)
+	for _, entry := range tmpEntries {
+		if err := os.Rename(filepath.Join(tmp, entry.Name()), filepath.Join(target, entry.Name())); err != nil {
+			return err
+		}
+	}
+	if vcs.IsRepo(target) {
+		if _, err := vcs.Commit(target, fmt.Sprintf("pull: apply pending changes for %s", opts.Name)); err != nil && !errors.Is(err, vcs.ErrUnavailable) {
+			return err
+		}
+	}
 	return os.RemoveAll(stage)
 }

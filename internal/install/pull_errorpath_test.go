@@ -9,6 +9,7 @@ import (
 
 	"github.com/danieljustus/symaira-skills/internal/render"
 	"github.com/danieljustus/symaira-skills/internal/skill"
+	"github.com/danieljustus/symaira-skills/internal/vcs"
 )
 
 // writeSkill creates a minimal portable skill directory and returns its root.
@@ -723,5 +724,40 @@ func TestPullSkipsEscapingSymlink(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(result.StagePath, "references", "leak.md")); !os.IsNotExist(err) {
 		t.Fatalf("escaping symlink target was materialized into pending tree: %v", err)
+	}
+}
+
+func TestApplyPendingPreservesRepositoryAndCommits(t *testing.T) {
+	opts, result := installAndStage(t, "preserve-repo")
+	target := filepath.Join(opts.LibraryDir, "preserve-repo")
+	if _, err := os.Stat(filepath.Join(result.StagePath, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("pending tree must not contain .git: %v", err)
+	}
+	if _, err := vcs.Init(target); err != nil {
+		t.Fatal(err)
+	}
+	before, err := vcs.Head(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyPending(opts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(target, ".git")); err != nil {
+		t.Fatalf("library repository was not preserved: %v", err)
+	}
+	after, err := vcs.Head(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == after {
+		t.Fatal("applying pending pull must create a forward commit")
+	}
+	history, err := vcs.History(target, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) == 0 || !strings.HasPrefix(history[0].Subject, "pull:") {
+		t.Fatalf("expected pull commit at repository head, got %+v", history)
 	}
 }
