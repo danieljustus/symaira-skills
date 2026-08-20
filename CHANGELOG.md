@@ -18,7 +18,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-<!-- Add user-visible changes here during development. -->
+### Added
+
+- `tools.go` pins `staticcheck` and `govulncheck` versions for Dependabot tracking (#216)
+
+### Changed
+
+- `symskills pull` now renders real newlines in human-readable output instead of literal `\n` (#217)
+- `install`, `uninstall`, `diff` and `pull` accept `--target all` (new default) and comma-separated lists, skipping harnesses where a skill is not installed; `ParseTarget` errors now list valid names (#218)
+- MCP `serve` surfaces `base_dir` and `cache_dir` so the drift guard can detect harness-side edits instead of silently overwriting them (#219)
+- The sync/resync policy is lifted into `internal/install` (`Sync`, `SyncOptions`, `ConflictPolicy`) and `mcptools.Register` is split into per-group registration functions across `mcptools_library.go`, `mcptools_render.go`, `mcptools_profiles.go`, `mcptools_versioning.go`, `mcptools_status.go` (#220)
+- The CLI `list` and MCP `skills_list` read the event log once per invocation instead of re-reading per skill (#221)
+- `pull` dereferences harness-side symlinks in the pending tree and copies their targets into the portable library (#227)
+
+### CI and project maintenance
+
+- Pin `staticcheck@v0.7.0` and `govulncheck@v1.1.4` in CI and Makefile instead of `@latest` (#216)
+- Move CodeQL to scheduled scans on the default branch (#226)
+- Bump `github/codeql-action` from 4.37.6 to 4.37.7 (#225, #224, #223)
+- Update stale SECURITY.md version reference (#214)
 
 ## [v0.4.0] - 2026-08-18
 
@@ -340,7 +358,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release.
 
-[Unreleased]: https://github.com/danieljustus/symaira-skills/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/danieljustus/symaira-skills/compare/v0.5.0...HEAD
+[v0.5.0]: https://github.com/danieljustus/symaira-skills/compare/v0.4.0...v0.5.0
 [v0.4.0]: https://github.com/danieljustus/symaira-skills/compare/v0.3.2...v0.4.0
 [v0.3.2]: https://github.com/danieljustus/symaira-skills/compare/v0.3.1...v0.3.2
 [v0.3.1]: https://github.com/danieljustus/symaira-skills/compare/v0.3.0...v0.3.1
