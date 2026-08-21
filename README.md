@@ -1,4 +1,12 @@
-# symaira-skills
+# symaira-skills — ARCHIVED
+
+> **⚠️ This repository is archived and read-only.**
+>
+> As part of the Symaira repo consolidation (27 → 13, `docs/repo-konsolidierung.md` §3.1),
+> the skills core was absorbed into
+> [`symaira-brain`](https://github.com/danieljustus/symaira-brain) on 2026-08-21 —
+> `symbrain` now runs skills in-process (MCP tools `skills_*`).
+> Full history remains in this repository's commit log.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/danieljustus/symaira-skills/ci.yml)](https://github.com/danieljustus/symaira-skills/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/danieljustus/symaira-skills)](https://github.com/danieljustus/symaira-skills/releases)
